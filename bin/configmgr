@@ -1,0 +1,220 @@
+import time
+import logging
+import tornado
+import optparse
+import cStringIO
+import functools
+import collections
+import tornado.gen
+import ConfigParser
+import tornado.ioloop
+
+import uavcan
+import uavcan.node
+
+
+START_TIME = time.time()
+CONFIG = None
+NODE_TIMESTAMP = collections.defaultdict(float)
+NODE_STATUS = {}
+NODE_INFO = {}
+NODE_ALLOCATION = {}
+
+
+NODE_STATUS_TIMEOUT = 30.0
+
+
+class NodeStatusHandler(uavcan.node.MessageHandler):
+    @tornado.gen.coroutine
+    def on_message(self, message):
+        global NODE_STATUS, CONFIG
+
+        node_id = self.transfer.source_node_id
+        last_timestamp = NODE_TIMESTAMP[node_id]
+        last_node_uptime = NODE_STATUS[node_id].uptime \
+                           if node_id in NODE_STATUS else 0
+
+        # Update the node status registry
+        NODE_STATUS[node_id] = message
+        NODE_TIMESTAMP[node_id] = time.time()
+
+        if time.time() - last_timestamp > NODE_STATUS_TIMEOUT or \
+                message.uptime < last_node_uptime:
+            # The node has timed out, hasn't been seen before, or has
+            # restarted, so get the node's hardware and software info
+            request = uavcan.protocol.GetNodeInfo()
+            response, response_transfer = \
+                yield self.node.send_request(request, node_id)
+            NODE_INFO[node_id] = response
+
+            # If the device is in the config file, make sure it has the
+            # software version listed for it in that file. If not, send a
+            # BeginFirmwareUpdate with the appropriate path.
+            fw_path = "{0!s}:{1!r}".format(
+                response.name, response.hardware_version.unique_id)
+            if CONFIG.has_section(fw_path):
+                request = uavcan.protocol.file.BeginFirmwareUpdate()
+                request.source_node_id = self.node.node_id
+                request.image_file_remote_path.path = fw_path
+                response, response_transfer = \
+                    yield self.node.send_request(request, node_id)
+
+                if response.error != response.ERROR_OK:
+                    msg = ("[MASTER] #{0:03d} rejected BeginFirmwareUpdate " +
+                           "with error {1:d}: {2!s}").format(
+                           node_id, response.error,
+                           resopnse.optional_error_message.encode())
+                    logging.error(msg)
+
+        raise tornado.gen.Return()
+
+
+class DynamicNodeIDAllocationHandler(uavcan.node.MessageHandler):
+    def on_message(self, message):
+        global NODE_STATUS, NODE_ALLOCATION, CONFIG
+
+        node_uid = message.short_unique_id
+        node_requested_id = message.node_id
+        node_allocated_id = None
+
+        allocated_node_ids = set(NODE_ALLOCATION.itervalues()) | \
+                             set(NODE_STATUS.iterkeys())
+
+        # If we've already allocated a node ID to this device, return the
+        # same one
+        if node_uid in NODE_ALLOCATION:
+            node_allocated_id = NODE_ALLOCATION[node_uid]
+
+        # If an ID was requested but not allocated yet, allocate the first ID
+        # equal to or higher than the one that was requested
+        if node_requested_id and not node_allocated_id:
+            # TODO: restrict range of dynamically-assignable node IDs
+            for node_id in xrange(node_requested_id, 128):
+                if node_id not in allocated_node_ids:
+                    node_allocated_id = node_id
+                    break
+
+        # If no ID was allocated in the above step (also if the requested ID
+        # was zero), allocate the highest unallocated node ID
+        if not node_allocated_id:
+            # TODO: restrict range of dynamically-assignable node IDs
+            for node_id in xrange(127, 0, -1):
+                if node_id not in allocated_node_ids:
+                    node_allocated_id = node_id
+                    break
+
+        if node_allocated_id:
+            response = uavcan.protocol.DynamicNodeIDAllocation()
+            response.short_unique_id = node_uid
+            response.node_id = node_allocated_id
+            self.node.send_broadcast(response)
+            logging.info("[MASTER] Allocated node ID #{0:03d}".format(
+                         allocated_node_id))
+        else:
+            logging.error("[MASTER] Couldn't allocate dynamic node ID")
+
+
+class FileGetInfoHandler(uavcan.node.ServiceHandler):
+    def on_request(self):
+        global CONFIG
+        try:
+            vpath = self.request.path.path
+            path = CONFIG.get(vpath, "firmware_path")
+            with open(path, "rb") as fw:
+                data = fw.read()
+                self.response.error = self.response.OK
+                self.response.size = len(data)
+                self.response.crc64 = dsdl.signature.compute_signature(data)
+                self.response.entry_type = \
+                    (self.response.entry_type.FLAG_FILE |
+                     self.response.entry_type.FLAG_READABLE)
+        except Exception:
+            self.response.error = self.response.UNKNOWN_ERROR
+            self.response.size = 0
+            self.response.crc64 = 0
+            self.response.entry_type = self.response.entry_type.FLAG_FILE
+
+
+class FileReadHandler(uavcan.node.ServiceHandler):
+    def on_request(self):
+        global CONFIG
+        try:
+            vpath = self.request.path.path
+            path = CONFIG.get(vpath, "firmware_path")
+            with open(path, "rb") as fw:
+                fw.seek(payload.offset)
+                self.response.error = self.response.UNKNOWN_ERROR
+                self.response.data = fw.read(250)
+        except Exception:
+            self.response.error = self.response.UNKNOWN_ERROR
+
+
+
+class DebugLogMessageHandler(uavcan.node.MessageHandler):
+    def on_message(self, message):
+        logmsg = "[#{0:03d}:{1}] {2}".format(self.transfer.source_node_id,
+                                             message.source, message.text)
+        (logging.debug, logging.info,
+            logging.warning, logging.error)[message.level.value](logmsg)
+
+
+class EscStatusMessageHandler(uavcan.node.MessageHandler):
+    def on_message(self, message):
+        logmsg = "[#{0:03d}] {1:.2f} V, {2:.2f} A, {3:.2f} K, {4:d} rpm"
+        logmsg = logmsg.format(self.transfer.source_node_id, message.voltage,
+                               message.current, message.temperature,
+                               message.rpm)
+        logging.info(logmsg)
+
+
+def send_node_status(node):
+    global START_TIME
+    status = uavcan.protocol.NodeStatus()
+    status.uptime_sec = int(time.time() - START_TIME)
+    status.status_code = status.STATUS_OK
+    status.vendor_specific_status_code = 0
+    node.send_broadcast(status)
+
+
+if __name__ == "__main__":
+    parser = optparse.OptionParser(usage="usage: %prog [options] DEVICE")
+    parser.add_option("-c", "--config", dest="config_path",
+                      help="ensure nodes are configured as described in FILE",
+                      metavar="FILE")
+    parser.add_option("-n", "--node-id", dest="node_id", default=127,
+                      help="run master with NODE_ID",
+                      metavar="NODE_ID")
+    parser.add_option("-v", "--verbose", dest="verbose", action="store_true",
+                      help="enable verbose output")
+    options, args = parser.parse_args()
+    if len(args) < 1:
+        parser.error("missing path to CAN device")
+        sys.exit()
+
+    logging.basicConfig(level=logging.DEBUG)
+    uavcan.load_dsdl("uavcan/defs/uavcan")
+
+    CONFIG_PATH = options.config_path
+
+    logging.info("Opening CAN interface at {0}.".format(args[0]))
+
+    ioloop = tornado.ioloop.IOLoop.current()
+    node = uavcan.node.Node([
+        (550, NodeStatusHandler),
+        (559, DynamicNodeIDAllocationHandler),
+        (585, FileGetInfoHandler),
+        (588, FileReadHandler),
+        (1023, DebugLogMessageHandler),
+        (601, EscStatusMessageHandler)
+    ], node_id=options.node_id)
+    node.listen(args[0])
+
+    # Send node status every 0.5 sec
+    node_status_timer = tornado.ioloop.PeriodicCallback(
+        functools.partial(send_node_status, node),
+        500, io_loop=ioloop)
+    node_status_timer.start()
+
+    CONFIG = ConfigParser.SafeConfigParser()
+
+    ioloop.start()
