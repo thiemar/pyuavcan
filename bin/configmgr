@@ -31,7 +31,7 @@ class NodeStatusHandler(uavcan.node.MessageHandler):
 
         node_id = self.transfer.source_node_id
         last_timestamp = NODE_TIMESTAMP[node_id]
-        last_node_uptime = NODE_STATUS[node_id].uptime \
+        last_node_uptime = NODE_STATUS[node_id].uptime_sec \
                            if node_id in NODE_STATUS else 0
 
         # Update the node status registry
@@ -39,10 +39,10 @@ class NodeStatusHandler(uavcan.node.MessageHandler):
         NODE_TIMESTAMP[node_id] = time.time()
 
         if time.time() - last_timestamp > NODE_STATUS_TIMEOUT or \
-                message.uptime < last_node_uptime:
+                message.uptime_sec < last_node_uptime:
             # The node has timed out, hasn't been seen before, or has
             # restarted, so get the node's hardware and software info
-            request = uavcan.protocol.GetNodeInfo()
+            request = uavcan.protocol.GetNodeInfo(mode="request")
             response, response_transfer = \
                 yield self.node.send_request(request, node_id)
             NODE_INFO[node_id] = response
@@ -53,6 +53,7 @@ class NodeStatusHandler(uavcan.node.MessageHandler):
             fw_path = "{0!s}:{1!r}".format(
                 response.name, response.hardware_version.unique_id)
             if CONFIG.has_section(fw_path):
+                # TODO: check version before updating
                 request = uavcan.protocol.file.BeginFirmwareUpdate()
                 request.source_node_id = self.node.node_id
                 request.image_file_remote_path.path = fw_path
@@ -108,8 +109,10 @@ class DynamicNodeIDAllocationHandler(uavcan.node.MessageHandler):
             response.short_unique_id = node_uid
             response.node_id = node_allocated_id
             self.node.send_broadcast(response)
-            logging.info("[MASTER] Allocated node ID #{0:03d}".format(
-                         allocated_node_id))
+            NODE_ALLOCATION[node_uid] = node_allocated_id
+            logging.info(("[MASTER] Allocated node ID #{0:03d} to node " +
+                          "with short UID {1!r}").format(node_allocated_id,
+                                                         node_uid))
         else:
             logging.error("[MASTER] Couldn't allocate dynamic node ID")
 
@@ -149,11 +152,11 @@ class FileReadHandler(uavcan.node.ServiceHandler):
             self.response.error = self.response.UNKNOWN_ERROR
 
 
-
 class DebugLogMessageHandler(uavcan.node.MessageHandler):
     def on_message(self, message):
         logmsg = "[#{0:03d}:{1}] {2}".format(self.transfer.source_node_id,
-                                             message.source, message.text)
+                                             message.source.decode(),
+                                             message.text.decode())
         (logging.debug, logging.info,
             logging.warning, logging.error)[message.level.value](logmsg)
 
@@ -184,6 +187,9 @@ if __name__ == "__main__":
     parser.add_option("-n", "--node-id", dest="node_id", default=127,
                       help="run master with NODE_ID",
                       metavar="NODE_ID")
+    parser.add_option("-s", "--bus-speed", dest="bus_speed", default=1000000,
+                      help="set CAN bus speed",
+                      metavar="NODE_ID")
     parser.add_option("-v", "--verbose", dest="verbose", action="store_true",
                       help="enable verbose output")
     options, args = parser.parse_args()
@@ -206,8 +212,8 @@ if __name__ == "__main__":
         (588, FileReadHandler),
         (1023, DebugLogMessageHandler),
         (601, EscStatusMessageHandler)
-    ], node_id=options.node_id)
-    node.listen(args[0])
+    ], node_id=int(options.node_id))
+    node.listen(args[0], baudrate=int(options.bus_speed))
 
     # Send node status every 0.5 sec
     node_status_timer = tornado.ioloop.PeriodicCallback(

@@ -191,7 +191,8 @@ class PrimitiveValue(BaseValue):
 class ArrayValue(BaseValue, collections.MutableSequence):
     def __init__(self, uavcan_type, tao=False, *args, **kwargs):
         super(ArrayValue, self).__init__(uavcan_type, *args, **kwargs)
-        self._tao = tao if getattr(self.type, "bitlen", None) >= 8 else False
+        value_bitlen = getattr(self.type.value_type, "bitlen", None)
+        self._tao = tao if value_bitlen >= 8 else False
         if isinstance(self.type.value_type, dsdl.parser.PrimitiveType):
             self.__item_ctor = functools.partial(PrimitiveValue,
                                                  self.type.value_type)
@@ -297,7 +298,7 @@ class ArrayValue(BaseValue, collections.MutableSequence):
             self.append(byte)
 
     def decode(self, encoding="utf-8"):
-        return bytearray(item.value for item in self).decode(encoding)
+        return bytearray(item.value for item in self.__items).decode(encoding)
 
 
 class CompoundValue(BaseValue):
@@ -332,7 +333,7 @@ class CompoundValue(BaseValue):
             if isinstance(field.type, dsdl.parser.PrimitiveType):
                 self.fields[field.name] = PrimitiveValue(field.type)
             elif isinstance(field.type, dsdl.parser.ArrayType):
-                atao = field == source_fields[-1] and tao
+                atao = field is source_fields[-1] and tao
                 self.fields[field.name] = ArrayValue(field.type, tao=atao)
             elif isinstance(field.type, dsdl.parser.CompoundType):
                 self.fields[field.name] = CompoundValue(field.type)

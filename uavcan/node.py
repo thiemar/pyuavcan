@@ -108,8 +108,9 @@ class Node(object):
         self.next_transfer_ids[key] = (transfer_id + 1) & 7
         return transfer_id
 
-    def listen(self, device):
-        self.can = driver.CAN(device)
+    def listen(self, device, baudrate=1000000):
+        self.can = driver.CAN(device, baudrate=baudrate)
+        self.can.open()
         self.can.add_to_ioloop(tornado.ioloop.IOLoop.current(),
                                callback=self._recv_frame)
 

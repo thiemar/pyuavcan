@@ -13,7 +13,8 @@ class CAN(object):
     def __init__(self, device, baudrate=1000000):
         self.conn = serial.Serial(device, baudrate, timeout=0)
         self._read_handler = self._get_bytes_sync
-        self.partial_message  =""
+        self.partial_message = ""
+        self.baudrate = baudrate
 
     def _get_bytes_sync(self):
         return self.conn.read(1)
@@ -51,7 +52,13 @@ class CAN(object):
 
     def open(self, callback=None):
         self.close()
-        self.conn.write("S8\r")
+        speed_code = {
+            1000000: 8,
+            500000: 6,
+            250000: 5,
+            125000: 4
+        }[self.baudrate]
+        self.conn.write("S{0:d}\r".format(speed_code))
         self.conn.flush()
         self.recv()
         self.conn.write("O\r")
