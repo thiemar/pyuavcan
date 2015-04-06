@@ -125,7 +125,7 @@ class Node(object):
             transfer_id=transfer_id,
             transfer_type=transport.TransferType.SERVICE_REQUEST)
 
-        for frame in transfer.to_frames():
+        for frame in transfer.to_frames(datatype_crc=payload.type.base_crc):
             self.can.send(frame.message_id, frame.to_bytes(), extended=True)
 
         self.outstanding_requests[transfer.key] = transfer
@@ -142,7 +142,7 @@ class Node(object):
             transfer_id=transfer_id,
             transfer_type=transport.TransferType.MESSAGE_UNICAST)
 
-        for frame in transfer.to_frames():
+        for frame in transfer.to_frames(datatype_crc=payload.type.base_crc):
             self.can.send(frame.message_id, frame.to_bytes(), extended=True)
 
     def send_broadcast(self, payload):
@@ -153,7 +153,7 @@ class Node(object):
             transfer_id=transfer_id,
             transfer_type=transport.TransferType.MESSAGE_BROADCAST)
 
-        for frame in transfer.to_frames():
+        for frame in transfer.to_frames(datatype_crc=payload.type.base_crc):
             self.can.send(frame.message_id, frame.to_bytes(), extended=True)
 
 
@@ -172,7 +172,7 @@ class MessageHandler(object):
 
 class ServiceHandler(MessageHandler):
     def __init__(self, *args, **kwargs):
-        super(MessageHandler, self).__init__(self, *args, **kwargs)
+        super(ServiceHandler, self).__init__(*args, **kwargs)
         self.request = self.message
         self.response = transport.CompoundValue(self.request.type, tao=True,
                                                 mode="response")
@@ -184,8 +184,10 @@ class ServiceHandler(MessageHandler):
         # coroutine and it yields then we'll get a future back (the value
         # of which is irrelevant). Wait for the future to ensure the handler
         # has populated all the response fields.
-        if tornado.concurrent.is_future(result):
-            result = yield result
+
+        # FIXME
+        #if tornado.concurrent.is_future(result):
+        #    result = yield result
 
         # Send the response transfer
         transfer = transport.Transfer(
@@ -195,7 +197,7 @@ class ServiceHandler(MessageHandler):
             transfer_id=self.transfer.transfer_id,
             transfer_type=transport.TransferType.SERVICE_RESPONSE
         )
-        for frame in transfer.to_frames():
+        for frame in transfer.to_frames(datatype_crc=self.request.type.base_crc):
             self.node.can.send(frame.message_id, frame.to_bytes(),
                                extended=True)
 

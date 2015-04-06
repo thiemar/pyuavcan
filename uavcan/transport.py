@@ -217,7 +217,7 @@ class ArrayValue(BaseValue, collections.MutableSequence):
 
     def __getitem__(self, idx):
         if isinstance(self.__items[idx], PrimitiveValue):
-            return self.__items[idx].value
+            return self.__items[idx].value if self.__items[idx]._bits else 0
         else:
             return self.__items[idx]
 
@@ -232,8 +232,6 @@ class ArrayValue(BaseValue, collections.MutableSequence):
 
     def __delitem__(self, idx):
         del self.__items[idx]
-        if self.type.mode == dsdl.parser.ArrayType.MODE_STATIC:
-            self.__items.append(self.__item_ctor())
 
     def __len__(self):
         return len(self.__items)
@@ -253,19 +251,18 @@ class ArrayValue(BaseValue, collections.MutableSequence):
             self.__items.insert(idx, value)
 
     def unpack(self, stream):
-        del self[:]
         if self.type.mode == dsdl.parser.ArrayType.MODE_STATIC:
             for i in xrange(self.type.max_size):
-                new_item = self.__item_ctor()
-                stream = new_item.unpack(stream)
-                self.__items.append(new_item)
+                stream = self.__items[i].unpack(stream)
         elif self._tao:
+            del self[:]
             while len(stream) >= 8:
                 new_item = self.__item_ctor()
                 stream = new_item.unpack(stream)
                 self.__items.append(new_item)
             stream = ""
         else:
+            del self[:]
             count_width = int(math.ceil(math.log(self.type.max_size, 2))) or 1
             count = int(stream[0:count_width], 2)
             stream = stream[count_width:]
@@ -298,7 +295,8 @@ class ArrayValue(BaseValue, collections.MutableSequence):
             self.append(byte)
 
     def decode(self, encoding="utf-8"):
-        return bytearray(item.value for item in self.__items).decode(encoding)
+        return bytearray(item.value for item in self.__items
+                         if item._bits).decode(encoding)
 
 
 class CompoundValue(BaseValue):
@@ -330,13 +328,13 @@ class CompoundValue(BaseValue):
             self.constants[constant.name] = constant.value
 
         for field in source_fields:
+            atao = field is source_fields[-1] and tao
             if isinstance(field.type, dsdl.parser.PrimitiveType):
                 self.fields[field.name] = PrimitiveValue(field.type)
             elif isinstance(field.type, dsdl.parser.ArrayType):
-                atao = field is source_fields[-1] and tao
                 self.fields[field.name] = ArrayValue(field.type, tao=atao)
             elif isinstance(field.type, dsdl.parser.CompoundType):
-                self.fields[field.name] = CompoundValue(field.type)
+                self.fields[field.name] = CompoundValue(field.type, tao=atao)
 
     def __getattr__(self, attr):
         if attr in self.constants:
@@ -575,9 +573,10 @@ class Transfer(object):
             self.payload = self.payload[2:]
             crc = common.crc16_from_bytes(self.payload, initial=datatype_crc)
             if crc != transfer_crc:
-                raise ValueError(
-                    "CRC mismatch: expected {0:x}, got {1:x}".format(
-                    crc, transfer_crc))
+                raise ValueError(("CRC mismatch: expected {0:x}, got {1:x} " +
+                                  "for payload {2!r} (DTID {3:d})").format(
+                                  crc, transfer_crc, self.payload,
+                                  self.data_type_id))
 
     @property
     def key(self):

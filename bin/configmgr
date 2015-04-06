@@ -1,7 +1,9 @@
+import os
 import time
 import logging
 import tornado
 import optparse
+import binascii
 import cStringIO
 import functools
 import collections
@@ -22,6 +24,9 @@ NODE_ALLOCATION = {}
 
 
 NODE_STATUS_TIMEOUT = 30.0
+
+# FIXME: override for firmware debugging
+FIRMWARE_PATH = os.path.join(os.path.dirname(__file__), "header.bin")
 
 
 class NodeStatusHandler(uavcan.node.MessageHandler):
@@ -47,24 +52,52 @@ class NodeStatusHandler(uavcan.node.MessageHandler):
                 yield self.node.send_request(request, node_id)
             NODE_INFO[node_id] = response
 
+            hw_unique_id = "".join(format(c, "02X") for c in
+                                   response.hardware_version.unique_id)
+            msg = (
+                "[#{0:03d}:uavcan.protocol.GetNodeInfo] " +
+                "software_version.major={1:d} " +
+                "software_version.minor={2:d} " +
+                "software_version.vcs_commit={3:08x} " +
+                "software_version.image_crc={4:016X} " +
+                "hardware_version.major={5:d} " +
+                "hardware_version.minor={6:d} " +
+                "hardware_version.unique_id={7!s} " +
+                "name={8!r}"
+            ).format(
+                self.transfer.source_node_id,
+                response.software_version.major,
+                response.software_version.minor,
+                response.software_version.vcs_commit,
+                response.software_version.image_crc,
+                response.hardware_version.major,
+                response.hardware_version.minor,
+                hw_unique_id,
+                response.name.decode()
+            )
+            logging.info(msg)
+
             # If the device is in the config file, make sure it has the
             # software version listed for it in that file. If not, send a
             # BeginFirmwareUpdate with the appropriate path.
-            fw_path = "{0!s}:{1!r}".format(
-                response.name, response.hardware_version.unique_id)
-            if CONFIG.has_section(fw_path):
+            fw_path = "{0!s}:{1!s}".format(response.name.decode(),
+                                           hw_unique_id)
+            # FIXME: override for bootloader debugging
+            if True or CONFIG.has_section(fw_path):
                 # TODO: check version before updating
-                request = uavcan.protocol.file.BeginFirmwareUpdate()
+                request = \
+                    uavcan.protocol.file.BeginFirmwareUpdate(mode="request")
                 request.source_node_id = self.node.node_id
-                request.image_file_remote_path.path = fw_path
+                request.image_file_remote_path.path.encode(fw_path)
                 response, response_transfer = \
                     yield self.node.send_request(request, node_id)
 
                 if response.error != response.ERROR_OK:
-                    msg = ("[MASTER] #{0:03d} rejected BeginFirmwareUpdate " +
+                    msg = ("[MASTER] #{0:03d} rejected "
+                           "uavcan.protocol.file.BeginFirmwareUpdate " +
                            "with error {1:d}: {2!s}").format(
                            node_id, response.error,
-                           resopnse.optional_error_message.encode())
+                           response.optional_error_message.encode())
                     logging.error(msg)
 
         raise tornado.gen.Return()
@@ -80,6 +113,7 @@ class DynamicNodeIDAllocationHandler(uavcan.node.MessageHandler):
 
         allocated_node_ids = set(NODE_ALLOCATION.itervalues()) | \
                              set(NODE_STATUS.iterkeys())
+        allocated_node_ids.add(self.node.node_id)
 
         # If we've already allocated a node ID to this device, return the
         # same one
@@ -120,36 +154,49 @@ class DynamicNodeIDAllocationHandler(uavcan.node.MessageHandler):
 class FileGetInfoHandler(uavcan.node.ServiceHandler):
     def on_request(self):
         global CONFIG
+        logging.debug("[#{0:03d}:uavcan.protocol.file.GetInfo] {1!r}".format(
+                      self.transfer.source_node_id,
+                      self.request.path.path.decode()))
         try:
-            vpath = self.request.path.path
-            path = CONFIG.get(vpath, "firmware_path")
+            vpath = self.request.path.path.decode()
+            # FIXME: override for firmware debugging
+            path = FIRMWARE_PATH # CONFIG.get(vpath, "firmware_path")
             with open(path, "rb") as fw:
                 data = fw.read()
-                self.response.error = self.response.OK
+                self.response.error.value = self.response.error.OK
                 self.response.size = len(data)
-                self.response.crc64 = dsdl.signature.compute_signature(data)
-                self.response.entry_type = \
+                self.response.crc64 = \
+                    uavcan.dsdl.signature.compute_signature(data)
+                self.response.entry_type.flags = \
                     (self.response.entry_type.FLAG_FILE |
                      self.response.entry_type.FLAG_READABLE)
         except Exception:
-            self.response.error = self.response.UNKNOWN_ERROR
+            logging.exception("FileGetInfoHandler.on_request failed")
+            self.response.error.value = self.response.error.UNKNOWN_ERROR
             self.response.size = 0
             self.response.crc64 = 0
-            self.response.entry_type = self.response.entry_type.FLAG_FILE
+            self.response.entry_type.flags = 0
 
 
 class FileReadHandler(uavcan.node.ServiceHandler):
     def on_request(self):
         global CONFIG
+        logging.debug(("[#{0:03d}:uavcan.protocol.file.Read] {1!r} @ " +
+                       "offset {2:d}").format(self.transfer.source_node_id,
+                                              self.request.path.path.decode(),
+                                              self.request.offset))
         try:
-            vpath = self.request.path.path
-            path = CONFIG.get(vpath, "firmware_path")
+            vpath = self.request.path.path.decode()
+            # FIXME: override for firmware debugging
+            path = FIRMWARE_PATH #CONFIG.get(vpath, "firmware_path")
             with open(path, "rb") as fw:
-                fw.seek(payload.offset)
-                self.response.error = self.response.UNKNOWN_ERROR
-                self.response.data = fw.read(250)
+                fw.seek(self.request.offset)
+                for byte in fw.read(250):
+                    self.response.data.append(ord(byte))
+                self.response.error.value = self.response.error.OK
         except Exception:
-            self.response.error = self.response.UNKNOWN_ERROR
+            logging.exception("FileReadHandler.on_request failed")
+            self.response.error.value = self.response.error.UNKNOWN_ERROR
 
 
 class DebugLogMessageHandler(uavcan.node.MessageHandler):
@@ -222,5 +269,7 @@ if __name__ == "__main__":
     node_status_timer.start()
 
     CONFIG = ConfigParser.SafeConfigParser()
+    if CONFIG_PATH:
+        CONFIG.read(CONFIG_PATH)
 
     ioloop.start()

@@ -11,7 +11,7 @@ import logging as log
 
 class CAN(object):
     def __init__(self, device, baudrate=1000000):
-        self.conn = serial.Serial(device, baudrate, timeout=0)
+        self.conn = serial.Serial(device, 3000000, timeout=0)
         self._read_handler = self._get_bytes_sync
         self.partial_message = ""
         self.baudrate = baudrate
