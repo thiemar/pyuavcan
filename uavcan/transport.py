@@ -554,10 +554,13 @@ class Transfer(object):
         return out_frames
 
     def from_frames(self, frames, datatype_crc=None):
-        for i, f in enumerate(frames):
-            if i != f.frame_index:
-                raise IndexError(("Frame index mismatch: expected {0}, " +
-                                  "got {1}").format(i, f.frame_index))
+        # Ignore frame index for anonymous transfers since they can't be
+        # multi-frame
+        if frames[0].source_node_id:
+            for i, f in enumerate(frames):
+                if i != f.frame_index:
+                    raise IndexError(("Frame index mismatch: expected {0}, " +
+                                      "got {1}").format(i, f.frame_index))
 
         self.transfer_id = frames[0].transfer_id
         self.transfer_type = frames[0].transfer_type
