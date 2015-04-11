@@ -21,6 +21,7 @@ NODE_TIMESTAMP = collections.defaultdict(float)
 NODE_STATUS = {}
 NODE_INFO = {}
 NODE_ALLOCATION = {}
+NODE_ALLOCATION_QUERY = ""
 
 
 NODE_STATUS_TIMEOUT = 30.0
@@ -83,7 +84,7 @@ class NodeStatusHandler(uavcan.node.MessageHandler):
             fw_path = "{0!s}:{1!s}".format(response.name.decode(),
                                            hw_unique_id)
             # FIXME: override for bootloader debugging
-            if True or CONFIG.has_section(fw_path):
+            if False or CONFIG.has_section(fw_path):
                 # TODO: check version before updating
                 request = \
                     uavcan.protocol.file.BeginFirmwareUpdate(mode="request")
@@ -105,50 +106,86 @@ class NodeStatusHandler(uavcan.node.MessageHandler):
 
 class DynamicNodeIDAllocationHandler(uavcan.node.MessageHandler):
     def on_message(self, message):
-        global NODE_STATUS, NODE_ALLOCATION, CONFIG
+        global NODE_STATUS, NODE_ALLOCATION, CONFIG, NODE_ALLOCATION_QUERY
 
-        node_uid = message.short_unique_id
-        node_requested_id = message.node_id
-        node_allocated_id = None
+        if message.first_part_of_unique_id:
+            # First-phase messages trigger a second-phase query
+            NODE_ALLOCATION_QUERY = message.unique_id.decode()
 
-        allocated_node_ids = set(NODE_ALLOCATION.itervalues()) | \
-                             set(NODE_STATUS.iterkeys())
-        allocated_node_ids.add(self.node.node_id)
-
-        # If we've already allocated a node ID to this device, return the
-        # same one
-        if node_uid in NODE_ALLOCATION:
-            node_allocated_id = NODE_ALLOCATION[node_uid]
-
-        # If an ID was requested but not allocated yet, allocate the first ID
-        # equal to or higher than the one that was requested
-        if node_requested_id and not node_allocated_id:
-            # TODO: restrict range of dynamically-assignable node IDs
-            for node_id in xrange(node_requested_id, 128):
-                if node_id not in allocated_node_ids:
-                    node_allocated_id = node_id
-                    break
-
-        # If no ID was allocated in the above step (also if the requested ID
-        # was zero), allocate the highest unallocated node ID
-        if not node_allocated_id:
-            # TODO: restrict range of dynamically-assignable node IDs
-            for node_id in xrange(127, 0, -1):
-                if node_id not in allocated_node_ids:
-                    node_allocated_id = node_id
-                    break
-
-        if node_allocated_id:
-            response = uavcan.protocol.DynamicNodeIDAllocation()
-            response.short_unique_id = node_uid
-            response.node_id = node_allocated_id
+            response = uavcan.protocol.dynamic_node_id.Allocation()
+            response.first_part_of_unique_id = 0
+            response.node_id = 0
+            response.unique_id.encode(NODE_ALLOCATION_QUERY)
             self.node.send_broadcast(response)
-            NODE_ALLOCATION[node_uid] = node_allocated_id
-            logging.info(("[MASTER] Allocated node ID #{0:03d} to node " +
-                          "with short UID {1!r}").format(node_allocated_id,
-                                                         node_uid))
+
+            logging.debug(("[MASTER] Got first-stage dynamic ID request " +
+                           "for {0!r}").format(NODE_ALLOCATION_QUERY))
+        elif len(message.unique_id) == 7 and len(NODE_ALLOCATION_QUERY) == 7:
+            # Second-phase messages trigger a third-phase query
+            NODE_ALLOCATION_QUERY = NODE_ALLOCATION_QUERY + \
+                                    message.unique_id.decode()
+
+            response = uavcan.protocol.dynamic_node_id.Allocation()
+            response.first_part_of_unique_id = 0
+            response.node_id = 0
+            response.unique_id.encode(NODE_ALLOCATION_QUERY)
+            self.node.send_broadcast(response)
+            logging.debug(("[MASTER] Got second-stage dynamic ID request " +
+                           "for {0!r}").format(NODE_ALLOCATION_QUERY))
+        elif len(message.unique_id) == 2 and len(NODE_ALLOCATION_QUERY) == 14:
+            # Third-phase messages trigger an allocation
+            NODE_ALLOCATION_QUERY = NODE_ALLOCATION_QUERY + \
+                                    message.unique_id.decode()
+
+            logging.debug(("[MASTER] Got third-stage dynamic ID request " +
+                           "for {0!r}").format(NODE_ALLOCATION_QUERY))
+
+            node_requested_id = message.node_id
+            node_allocated_id = None
+
+            allocated_node_ids = set(NODE_ALLOCATION.itervalues()) | \
+                                 set(NODE_STATUS.iterkeys())
+            allocated_node_ids.add(self.node.node_id)
+
+            # If we've already allocated a node ID to this device, return the
+            # same one
+            if NODE_ALLOCATION_QUERY in NODE_ALLOCATION:
+                node_allocated_id = NODE_ALLOCATION[NODE_ALLOCATION_QUERY]
+
+            # If an ID was requested but not allocated yet, allocate the first
+            # ID equal to or higher than the one that was requested
+            if node_requested_id and not node_allocated_id:
+                # TODO: restrict range of dynamically-assignable node IDs
+                for node_id in xrange(node_requested_id, 128):
+                    if node_id not in allocated_node_ids:
+                        node_allocated_id = node_id
+                        break
+
+            # If no ID was allocated in the above step (also if the requested
+            # ID was zero), allocate the highest unallocated node ID
+            if not node_allocated_id:
+                # TODO: restrict range of dynamically-assignable node IDs
+                for node_id in xrange(127, 0, -1):
+                    if node_id not in allocated_node_ids:
+                        node_allocated_id = node_id
+                        break
+
+            NODE_ALLOCATION[NODE_ALLOCATION_QUERY] = node_allocated_id
+
+            if node_allocated_id:
+                response = uavcan.protocol.dynamic_node_id.Allocation()
+                response.first_part_of_unique_id = 0
+                response.node_id = node_allocated_id
+                response.unique_id.encode(NODE_ALLOCATION_QUERY)
+                self.node.send_broadcast(response)
+                logging.info(("[MASTER] Allocated node ID #{0:03d} to node " +
+                              "with unique ID {1!r}").format(
+                              node_allocated_id, NODE_ALLOCATION_QUERY))
+            else:
+                logging.error("[MASTER] Couldn't allocate dynamic node ID")
         else:
-            logging.error("[MASTER] Couldn't allocate dynamic node ID")
+            # Received mis-sequenced reply, clear out the state
+            NODE_ALLOCATION_QUERY = ""
 
 
 class FileGetInfoHandler(uavcan.node.ServiceHandler):
