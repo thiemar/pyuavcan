@@ -42,8 +42,9 @@ def load_dsdl(paths):
     """Loads the DSDL files under the given directory/directories, and creates
     types for each of them in the current module's namespace.
 
-    Also adds entries for all datatype IDs to the DATATYPES dictionary, which
-    maps datatype IDs to their respective type classes."""
+    Also adds entries for all datatype (ID, kind)s to the DATATYPES
+    dictionary, which maps datatype (ID, kind)s to their respective type
+    classes."""
     global DATATYPES
 
     if isinstance(paths, basestring):
@@ -55,7 +56,7 @@ def load_dsdl(paths):
         namespace, _, typename = dtype.full_name.rpartition(".")
         root_namespace._path(namespace).__dict__[typename] = dtype
         if dtype.default_dtid:
-            DATATYPES[dtype.default_dtid] = dtype
+            DATATYPES[(dtype.default_dtid, dtype.kind)] = dtype
             # Add the base CRC to each data type capable of being transmitted
             dtype.base_crc = dsdl.common.crc16_from_bytes(
                 struct.pack("<Q", dtype.get_data_type_signature()))

@@ -49,10 +49,16 @@ class Node(object):
             return
 
         dtid = transfer_frames[0].data_type_id
-        datatype = uavcan.DATATYPES.get(dtid)
+        if transfer_frames[0].transfer_type in (
+                transport.TransferType.SERVICE_RESPONSE,
+                transport.TransferType.SERVICE_REQUEST):
+            kind = dsdl.parser.CompoundType.KIND_SERVICE
+        else:
+            kind = dsdl.parser.CompoundType.KIND_MESSAGE
+        datatype = uavcan.DATATYPES.get((dtid, kind))
         if not datatype:
             logging.debug(("Node._recv_frame(): unrecognised data type " +
-                           "ID {0:d}").format(dtid))
+                           "ID {0:d} for kind {1:d}").format(dtid, kind))
             return
 
         transfer = transport.Transfer()
@@ -84,8 +90,9 @@ class Node(object):
             # This is a request, a unicast or a broadcast; look up the
             # appropriate handler by data type ID
             for handler in self.handlers:
-                if handler[0] == transfer.data_type_id:
-                    h = handler[1](payload, transfer, self)
+                if handler[0] == datatype:
+                    kwargs = handler[2] if len(handler) == 3 else {}
+                    h = handler[1](payload, transfer, self, **kwargs)
                     h._execute()
         elif transfer.transfer_type == transport.TransferType.SERVICE_RESPONSE and \
                 transfer.dest_node_id == self.node_id:
@@ -113,6 +120,21 @@ class Node(object):
         self.can.open()
         self.can.add_to_ioloop(tornado.ioloop.IOLoop.current(),
                                callback=self._recv_frame)
+
+        # Send node status every 0.5 sec
+        self.start_time = time.time()
+        self.status = uavcan.protocol.NodeStatus.STATUS_OK
+        self.nodestatus_timer = tornado.ioloop.PeriodicCallback(
+            self.send_node_status,
+            500, io_loop=ioloop)
+        self.nodestatus_timer.start()
+
+    def send_node_status(self):
+        status = uavcan.protocol.NodeStatus()
+        status.uptime_sec = int(time.time() - self.start_time)
+        status.status_code = self.status
+        status.vendor_specific_status_code = 0
+        self.send_broadcast(status)
 
     @tornado.concurrent.return_future
     def send_request(self, payload, dest_node_id=None, callback=None):

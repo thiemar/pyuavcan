@@ -11,47 +11,40 @@ import tornado.gen
 import ConfigParser
 import tornado.ioloop
 
+
 import uavcan
 import uavcan.node
 
 
-START_TIME = time.time()
-CONFIG = None
-NODE_TIMESTAMP = collections.defaultdict(float)
-NODE_STATUS = {}
-NODE_INFO = {}
-NODE_ALLOCATION = {}
-NODE_ALLOCATION_QUERY = ""
-
-
-NODE_STATUS_TIMEOUT = 30.0
-
-# FIXME: override for firmware debugging
-FIRMWARE_PATH = os.path.join(os.path.dirname(__file__), "header.bin")
-
-
 class NodeStatusHandler(uavcan.node.MessageHandler):
+    NODE_INFO = {}
+    NODE_STATUS = {}
+    NODE_TIMESTAMP = collections.defaultdict(float)
+    TIMEOUT = 30.0
+
+    def __init__(self, *args, **kwargs):
+        super(NodeStatusHandler, self).__init__(*args, **kwargs)
+        self.new_node_callback = kwargs.get("new_node_callback", None)
+
     @tornado.gen.coroutine
     def on_message(self, message):
-        global NODE_STATUS, CONFIG
-
         node_id = self.transfer.source_node_id
-        last_timestamp = NODE_TIMESTAMP[node_id]
-        last_node_uptime = NODE_STATUS[node_id].uptime_sec \
-                           if node_id in NODE_STATUS else 0
+        last_timestamp = NodeStatusHandler.NODE_TIMESTAMP[node_id]
+        last_node_uptime = NodeStatusHandler.NODE_STATUS[node_id].uptime_sec \
+                           if node_id in NodeStatusHandler.NODE_STATUS else 0
 
         # Update the node status registry
-        NODE_STATUS[node_id] = message
-        NODE_TIMESTAMP[node_id] = time.time()
+        NodeStatusHandler.NODE_STATUS[node_id] = message
+        NodeStatusHandler.NODE_TIMESTAMP[node_id] = time.time()
 
-        if time.time() - last_timestamp > NODE_STATUS_TIMEOUT or \
+        if time.time() - last_timestamp > NodeStatusHandler.TIMEOUT or \
                 message.uptime_sec < last_node_uptime:
             # The node has timed out, hasn't been seen before, or has
             # restarted, so get the node's hardware and software info
             request = uavcan.protocol.GetNodeInfo(mode="request")
             response, response_transfer = \
                 yield self.node.send_request(request, node_id)
-            NODE_INFO[node_id] = response
+            NodeStatusHandler.NODE_INFO[node_id] = response
 
             hw_unique_id = "".join(format(c, "02X") for c in
                                    response.hardware_version.unique_id)
@@ -78,39 +71,26 @@ class NodeStatusHandler(uavcan.node.MessageHandler):
             )
             logging.info(msg)
 
-            # If the device is in the config file, make sure it has the
-            # software version listed for it in that file. If not, send a
-            # BeginFirmwareUpdate with the appropriate path.
-            fw_path = "{0!s}:{1!s}".format(response.name.decode(),
-                                           hw_unique_id)
-            # FIXME: override for bootloader debugging
-            if False or CONFIG.has_section(fw_path):
-                # TODO: check version before updating
-                request = \
-                    uavcan.protocol.file.BeginFirmwareUpdate(mode="request")
-                request.source_node_id = self.node.node_id
-                request.image_file_remote_path.path.encode(fw_path)
-                response, response_transfer = \
-                    yield self.node.send_request(request, node_id)
-
-                if response.error != response.ERROR_OK:
-                    msg = ("[MASTER] #{0:03d} rejected "
-                           "uavcan.protocol.file.BeginFirmwareUpdate " +
-                           "with error {1:d}: {2!s}").format(
-                           node_id, response.error,
-                           response.optional_error_message.encode())
-                    logging.error(msg)
+            # If a new-node callback is defined, call it now
+            if self.new_node_callback:
+                self.new_node_callback(node_id, response)
 
         raise tornado.gen.Return()
 
 
 class DynamicNodeIDAllocationHandler(uavcan.node.MessageHandler):
-    def on_message(self, message):
-        global NODE_STATUS, NODE_ALLOCATION, CONFIG, NODE_ALLOCATION_QUERY
+    ALLOCATION = {}
+    ALLOCATION_QUERY = ""
 
+    def __init__(self, *args, **kwargs):
+        super(DynamicNodeIDAllocationHandler, self).__init__(*args, **kwargs)
+        self.dynamic_id_range = kwargs.get("dynamic_id_range", (1, 127))
+
+    def on_message(self, message):
         if message.first_part_of_unique_id:
             # First-phase messages trigger a second-phase query
-            NODE_ALLOCATION_QUERY = message.unique_id.decode()
+            DynamicNodeIDAllocationHandler.ALLOCATION_QUERY = \
+                message.unique_id.decode()
 
             response = uavcan.protocol.dynamic_node_id.Allocation()
             response.first_part_of_unique_id = 0
@@ -119,44 +99,55 @@ class DynamicNodeIDAllocationHandler(uavcan.node.MessageHandler):
             self.node.send_broadcast(response)
 
             logging.debug(("[MASTER] Got first-stage dynamic ID request " +
-                           "for {0!r}").format(NODE_ALLOCATION_QUERY))
-        elif len(message.unique_id) == 7 and len(NODE_ALLOCATION_QUERY) == 7:
+                           "for {0!r}").format(
+                           DynamicNodeIDAllocationHandler.ALLOCATION_QUERY))
+        elif len(message.unique_id) == 7 and \
+                len(DynamicNodeIDAllocationHandler.ALLOCATION_QUERY) == 7:
             # Second-phase messages trigger a third-phase query
-            NODE_ALLOCATION_QUERY = NODE_ALLOCATION_QUERY + \
-                                    message.unique_id.decode()
+            DynamicNodeIDAllocationHandler.ALLOCATION_QUERY = \
+                DynamicNodeIDAllocationHandler.ALLOCATION_QUERY + \
+                message.unique_id.decode()
 
             response = uavcan.protocol.dynamic_node_id.Allocation()
             response.first_part_of_unique_id = 0
             response.node_id = 0
-            response.unique_id.encode(NODE_ALLOCATION_QUERY)
+            response.unique_id.encode(
+                DynamicNodeIDAllocationHandler.ALLOCATION_QUERY)
             self.node.send_broadcast(response)
             logging.debug(("[MASTER] Got second-stage dynamic ID request " +
-                           "for {0!r}").format(NODE_ALLOCATION_QUERY))
-        elif len(message.unique_id) == 2 and len(NODE_ALLOCATION_QUERY) == 14:
+                           "for {0!r}").format(
+                           DynamicNodeIDAllocationHandler.ALLOCATION_QUERY))
+        elif len(message.unique_id) == 2 and \
+                len(DynamicNodeIDAllocationHandler.ALLOCATION_QUERY) == 14:
             # Third-phase messages trigger an allocation
-            NODE_ALLOCATION_QUERY = NODE_ALLOCATION_QUERY + \
-                                    message.unique_id.decode()
+            DynamicNodeIDAllocationHandler.ALLOCATION_QUERY = \
+                DynamicNodeIDAllocationHandler.ALLOCATION_QUERY + \
+                message.unique_id.decode()
 
             logging.debug(("[MASTER] Got third-stage dynamic ID request " +
-                           "for {0!r}").format(NODE_ALLOCATION_QUERY))
+                           "for {0!r}").format(
+                           DynamicNodeIDAllocationHandler.ALLOCATION_QUERY))
 
             node_requested_id = message.node_id
             node_allocated_id = None
 
-            allocated_node_ids = set(NODE_ALLOCATION.itervalues()) | \
-                                 set(NODE_STATUS.iterkeys())
+            allocated_node_ids = \
+                set(DynamicNodeIDAllocationHandler.ALLOCATION.itervalues()) | \
+                set(NodeStatusHandler.NODE_STATUS.iterkeys())
             allocated_node_ids.add(self.node.node_id)
 
             # If we've already allocated a node ID to this device, return the
             # same one
-            if NODE_ALLOCATION_QUERY in NODE_ALLOCATION:
-                node_allocated_id = NODE_ALLOCATION[NODE_ALLOCATION_QUERY]
+            if DynamicNodeIDAllocationHandler.ALLOCATION_QUERY in \
+                    DynamicNodeIDAllocationHandler.ALLOCATION:
+                node_allocated_id = DynamicNodeIDAllocationHandler.ALLOCATION[
+                    DynamicNodeIDAllocationHandler.ALLOCATION_QUERY]
 
             # If an ID was requested but not allocated yet, allocate the first
             # ID equal to or higher than the one that was requested
             if node_requested_id and not node_allocated_id:
-                # TODO: restrict range of dynamically-assignable node IDs
-                for node_id in xrange(node_requested_id, 128):
+                for node_id in xrange(node_requested_id,
+                                      self.dynamic_id_range[1]):
                     if node_id not in allocated_node_ids:
                         node_allocated_id = node_id
                         break
@@ -164,41 +155,48 @@ class DynamicNodeIDAllocationHandler(uavcan.node.MessageHandler):
             # If no ID was allocated in the above step (also if the requested
             # ID was zero), allocate the highest unallocated node ID
             if not node_allocated_id:
-                # TODO: restrict range of dynamically-assignable node IDs
-                for node_id in xrange(127, 0, -1):
+                for node_id in xrange(self.dynamic_id_range[1],
+                                      self.dynamic_id_range[0], -1):
                     if node_id not in allocated_node_ids:
                         node_allocated_id = node_id
                         break
 
-            NODE_ALLOCATION[NODE_ALLOCATION_QUERY] = node_allocated_id
+            DynamicNodeIDAllocationHandler.ALLOCATION[
+                DynamicNodeIDAllocationHandler.ALLOCATION_QUERY] = \
+                node_allocated_id
 
             if node_allocated_id:
                 response = uavcan.protocol.dynamic_node_id.Allocation()
                 response.first_part_of_unique_id = 0
                 response.node_id = node_allocated_id
-                response.unique_id.encode(NODE_ALLOCATION_QUERY)
+                response.unique_id.encode(
+                    DynamicNodeIDAllocationHandler.ALLOCATION_QUERY)
                 self.node.send_broadcast(response)
                 logging.info(("[MASTER] Allocated node ID #{0:03d} to node " +
                               "with unique ID {1!r}").format(
-                              node_allocated_id, NODE_ALLOCATION_QUERY))
+                              node_allocated_id,
+                              DynamicNodeIDAllocationHandler.ALLOCATION_QUERY)
+                              )
             else:
                 logging.error("[MASTER] Couldn't allocate dynamic node ID")
         else:
             # Received mis-sequenced reply, clear out the state
-            NODE_ALLOCATION_QUERY = ""
+            DynamicNodeIDAllocationHandler.ALLOCATION_QUERY = ""
+            logging.error("[MASTER] Got mis-sequenced reply, resetting query")
 
 
 class FileGetInfoHandler(uavcan.node.ServiceHandler):
+    def __init__(self, *args, **kwargs):
+        super(FileGetInfoHandler, self).__init__(*args, **kwargs)
+        self.base_path = kwargs.get("path")
+
     def on_request(self):
-        global CONFIG
         logging.debug("[#{0:03d}:uavcan.protocol.file.GetInfo] {1!r}".format(
                       self.transfer.source_node_id,
                       self.request.path.path.decode()))
         try:
             vpath = self.request.path.path.decode()
-            # FIXME: override for firmware debugging
-            path = FIRMWARE_PATH # CONFIG.get(vpath, "firmware_path")
-            with open(path, "rb") as fw:
+            with open(os.path.join(self.base_path, vpath), "rb") as fw:
                 data = fw.read()
                 self.response.error.value = self.response.error.OK
                 self.response.size = len(data)
@@ -208,7 +206,7 @@ class FileGetInfoHandler(uavcan.node.ServiceHandler):
                     (self.response.entry_type.FLAG_FILE |
                      self.response.entry_type.FLAG_READABLE)
         except Exception:
-            logging.exception("FileGetInfoHandler.on_request failed")
+            logging.exception("[#{0:03d}:uavcan.protocol.file.GetInfo] error")
             self.response.error.value = self.response.error.UNKNOWN_ERROR
             self.response.size = 0
             self.response.crc64 = 0
@@ -216,23 +214,24 @@ class FileGetInfoHandler(uavcan.node.ServiceHandler):
 
 
 class FileReadHandler(uavcan.node.ServiceHandler):
+    def __init__(self, *args, **kwargs):
+        super(FileReadHandler, self).__init__(*args, **kwargs)
+        self.base_path = kwargs.get("path")
+
     def on_request(self):
-        global CONFIG
         logging.debug(("[#{0:03d}:uavcan.protocol.file.Read] {1!r} @ " +
                        "offset {2:d}").format(self.transfer.source_node_id,
                                               self.request.path.path.decode(),
                                               self.request.offset))
         try:
             vpath = self.request.path.path.decode()
-            # FIXME: override for firmware debugging
-            path = FIRMWARE_PATH #CONFIG.get(vpath, "firmware_path")
-            with open(path, "rb") as fw:
+            with open(os.path.join(self.base_path, vpath), "rb") as fw:
                 fw.seek(self.request.offset)
                 for byte in fw.read(250):
                     self.response.data.append(ord(byte))
                 self.response.error.value = self.response.error.OK
         except Exception:
-            logging.exception("FileReadHandler.on_request failed")
+            logging.exception("[#{0:03d}:uavcan.protocol.file.Read] error")
             self.response.error.value = self.response.error.UNKNOWN_ERROR
 
 
@@ -243,70 +242,3 @@ class DebugLogMessageHandler(uavcan.node.MessageHandler):
                                              message.text.decode())
         (logging.debug, logging.info,
             logging.warning, logging.error)[message.level.value](logmsg)
-
-
-class EscStatusMessageHandler(uavcan.node.MessageHandler):
-    def on_message(self, message):
-        logmsg = "[#{0:03d}] {1:.2f} V, {2:.2f} A, {3:.2f} K, {4:d} rpm"
-        logmsg = logmsg.format(self.transfer.source_node_id, message.voltage,
-                               message.current, message.temperature,
-                               message.rpm)
-        logging.info(logmsg)
-
-
-def send_node_status(node):
-    global START_TIME
-    status = uavcan.protocol.NodeStatus()
-    status.uptime_sec = int(time.time() - START_TIME)
-    status.status_code = status.STATUS_OK
-    status.vendor_specific_status_code = 0
-    node.send_broadcast(status)
-
-
-if __name__ == "__main__":
-    parser = optparse.OptionParser(usage="usage: %prog [options] DEVICE")
-    parser.add_option("-c", "--config", dest="config_path",
-                      help="ensure nodes are configured as described in FILE",
-                      metavar="FILE")
-    parser.add_option("-n", "--node-id", dest="node_id", default=127,
-                      help="run master with NODE_ID",
-                      metavar="NODE_ID")
-    parser.add_option("-s", "--bus-speed", dest="bus_speed", default=1000000,
-                      help="set CAN bus speed",
-                      metavar="NODE_ID")
-    parser.add_option("-v", "--verbose", dest="verbose", action="store_true",
-                      help="enable verbose output")
-    options, args = parser.parse_args()
-    if len(args) < 1:
-        parser.error("missing path to CAN device")
-        sys.exit()
-
-    logging.basicConfig(level=logging.DEBUG)
-    uavcan.load_dsdl("uavcan/defs/uavcan")
-
-    CONFIG_PATH = options.config_path
-
-    logging.info("Opening CAN interface at {0}.".format(args[0]))
-
-    ioloop = tornado.ioloop.IOLoop.current()
-    node = uavcan.node.Node([
-        (550, NodeStatusHandler),
-        (559, DynamicNodeIDAllocationHandler),
-        (585, FileGetInfoHandler),
-        (588, FileReadHandler),
-        (1023, DebugLogMessageHandler),
-        (601, EscStatusMessageHandler)
-    ], node_id=int(options.node_id))
-    node.listen(args[0], baudrate=int(options.bus_speed))
-
-    # Send node status every 0.5 sec
-    node_status_timer = tornado.ioloop.PeriodicCallback(
-        functools.partial(send_node_status, node),
-        500, io_loop=ioloop)
-    node_status_timer.start()
-
-    CONFIG = ConfigParser.SafeConfigParser()
-    if CONFIG_PATH:
-        CONFIG.read(CONFIG_PATH)
-
-    ioloop.start()
