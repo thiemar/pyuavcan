@@ -11,6 +11,7 @@ import collections
 
 
 import uavcan
+import uavcan.dsdl as dsdl
 import uavcan.driver as driver
 import uavcan.transport as transport
 
@@ -115,18 +116,23 @@ class Node(object):
         self.next_transfer_ids[key] = (transfer_id + 1) & 7
         return transfer_id
 
-    def listen(self, device, baudrate=1000000):
-        self.can = driver.CAN(device, baudrate=baudrate)
+    def listen(self, device, baudrate=1000000, io_loop=None):
+        if device.startswith("/dev"):
+            self.can = driver.SLCAN(device, baudrate=baudrate)
+        else:
+            self.can = driver.SocketCAN(device)
+
         self.can.open()
         self.can.add_to_ioloop(tornado.ioloop.IOLoop.current(),
                                callback=self._recv_frame)
 
         # Send node status every 0.5 sec
         self.start_time = time.time()
-        self.status = uavcan.protocol.NodeStatus.STATUS_OK
+        # TODO: make it easier to get constant values from UAVCAN types
+        self.status = uavcan.protocol.NodeStatus().STATUS_OK
         self.nodestatus_timer = tornado.ioloop.PeriodicCallback(
             self.send_node_status,
-            500, io_loop=ioloop)
+            500, io_loop=io_loop)
         self.nodestatus_timer.start()
 
     def send_node_status(self):
@@ -145,7 +151,8 @@ class Node(object):
             source_node_id=self.node_id,
             dest_node_id=dest_node_id,
             transfer_id=transfer_id,
-            transfer_type=transport.TransferType.SERVICE_REQUEST)
+            transfer_priority=transport.TransferPriority.SERVICE,
+            request_not_response=True)
 
         for frame in transfer.to_frames(datatype_crc=payload.type.base_crc):
             self.can.send(frame.message_id, frame.to_bytes(), extended=True)
@@ -162,7 +169,7 @@ class Node(object):
             source_node_id=self.node_id,
             dest_node_id=dest_node_id,
             transfer_id=transfer_id,
-            transfer_type=transport.TransferType.MESSAGE_UNICAST)
+            transfer_priority=transport.TransferPriority.NORMAL)
 
         for frame in transfer.to_frames(datatype_crc=payload.type.base_crc):
             self.can.send(frame.message_id, frame.to_bytes(), extended=True)
@@ -173,7 +180,7 @@ class Node(object):
             payload=payload,
             source_node_id=self.node_id,
             transfer_id=transfer_id,
-            transfer_type=transport.TransferType.MESSAGE_BROADCAST)
+            transfer_priority=transport.TransferPriority.NORMAL)
 
         for frame in transfer.to_frames(datatype_crc=payload.type.base_crc):
             self.can.send(frame.message_id, frame.to_bytes(), extended=True)
@@ -217,7 +224,8 @@ class ServiceHandler(MessageHandler):
             source_node_id=self.node.node_id,
             dest_node_id=self.transfer.source_node_id,
             transfer_id=self.transfer.transfer_id,
-            transfer_type=transport.TransferType.SERVICE_RESPONSE
+            transfer_priority=transport.TransferPriority.SERVICE,
+            request_not_response=False
         )
         for frame in transfer.to_frames(datatype_crc=self.request.type.base_crc):
             self.node.can.send(frame.message_id, frame.to_bytes(),

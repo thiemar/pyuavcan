@@ -73,6 +73,12 @@ def load_dsdl(paths):
     for top_namespace in namespace._namespaces():
         MODULE.__dict__[str(top_namespace)] = namespace.__dict__[top_namespace]
 
+    MODULE.__dict__["thirdparty"] = Namespace()
+    for ext_namespace in root_namespace._namespaces():
+        if str(ext_namespace) != "uavcan":
+            MODULE.thirdparty.__dict__[str(ext_namespace)] = \
+                root_namespace.__dict__[ext_namespace]
+
 
 __all__ = ["dsdl", "transport", "load_dsdl", "DATATYPES"]
 

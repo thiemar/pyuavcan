@@ -95,7 +95,8 @@ class DynamicNodeIDAllocationHandler(uavcan.node.MessageHandler):
             response = uavcan.protocol.dynamic_node_id.Allocation()
             response.first_part_of_unique_id = 0
             response.node_id = 0
-            response.unique_id.encode(NODE_ALLOCATION_QUERY)
+            response.unique_id.encode(
+                DynamicNodeIDAllocationHandler.ALLOCATION_QUERY)
             self.node.send_broadcast(response)
 
             logging.debug(("[MASTER] Got first-stage dynamic ID request " +

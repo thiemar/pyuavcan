@@ -2,15 +2,160 @@
 
 import os
 import time
-import serial
+import socket
 import struct
 import binascii
 import functools
 import logging as log
 
 
-class CAN(object):
+# If PySerial isn't available, we can't support SLCAN
+try:
+    import serial
+except ImportError:
+    serial = None
+    logging.info("uavcan.driver cannot import PySerial; SLCAN will not be "+
+                 "available.")
+
+
+# Python 3.3+'s socket module has support for SocketCAN when running on Linux.
+# Use that if possible; otherwise
+try:
+    socket.CAN_RAW
+    def get_socket(ifname):
+        s = socket.socket(socket.PF_CAN, socket.SOCK_RAW, socket.CAN_RAW)
+        s.bind((ifname, ))
+        s.setblocking(0)
+        return s
+
+except Exception:
+    import ctypes
+    import ctypes.util
+    libc = ctypes.CDLL(ctypes.util.find_library("c"))
+
+    # from linux/can.h
+    CAN_RAW = 1
+
+    # from linux/socket.h
+    AF_CAN = 29
+
+    class sockaddr_can(ctypes.Structure):
+        """
+        typedef __u32 canid_t;
+        struct sockaddr_can {
+            sa_family_t can_family;
+            int         can_ifindex;
+            union {
+                struct { canid_t rx_id, tx_id; } tp;
+            } can_addr;
+        };
+        """
+        _fields_ = [
+            ("can_family", ctypes.c_uint16),
+            ("can_ifindex", ctypes.c_int),
+            ("can_addr_tp_rx_id", ctypes.c_uint32),
+            ("can_addr_tp_tx_id", ctypes.c_uint32)
+        ]
+
+    class can_frame(ctypes.Structure):
+        """
+        typedef __u32 canid_t;
+        struct can_frame {
+            canid_t can_id;
+            __u8    can_dlc;
+            __u8    data[8] __attribute__((aligned(8)));
+        };
+        """
+        _fields_ = [
+            ("can_id", ctypes.c_uint32),
+            ("can_dlc", ctypes.c_uint8),
+            ("_pad", ctypes.c_ubyte * 3),
+            ("data", ctypes.c_uint8 * 8)
+        ]
+
+    class CANSocket(object):
+        def __init__(self, fd):
+            self.fd = fd
+
+        def recv(self, bufsize, flags=None):
+            frame = can_frame()
+            nbytes = libc.read(self.fd, ctypes.byref(frame),
+                               sys.getsizeof(frame))
+            return ctypes.string_at(ctypes.byref(frame),
+                                    ctypes.sizeof(frame))
+
+        def send(self, data, flags=None):
+            frame = can_frame()
+            ctypes.memmove(ctypes.byref(frame), data,
+                           ctypes.sizeof(frame))
+            return libc.write(self.fd, ctypes.byref(frame),
+                              ctypes.sizeof(frame))
+
+        def fileno(self):
+            return self.fd
+
+        def close(self):
+            libc.close(self.fd)
+
+    def get_socket(ifname):
+        socket_fd = libc.socket(AF_CAN, socket.SOCK_RAW, CAN_RAW)
+        libc.fcntl(socket_fd, fcntl.F_SETFL, os.O_NONBLOCK)
+        ifidx = libc.if_nametoindex(ifname)
+        addr = sockaddr_can(AF_CAN, ifidx)
+        error = libc.bind(socket_fd, ctypes.byref(addr), ctypes.sizeof(addr))
+        return CANSocket(socket_fd)
+
+
+# from linux/can.h
+CAN_EFF_FLAG = 0x80000000
+CAN_EFF_MASK = 0x1FFFFFFF
+
+
+class SocketCAN(object):
+    def __init__(self, interface):
+        self.interface = interface
+        self.socket = None
+
+    def _read(self, fd, events, calback=None):
+        packet = self.recv(16)
+        while packet:
+            can_id, can_dlc, can_data = struct.unpack("=IB3x8s", packet)
+            message = (can_id & CAN_EFF_MASK, can_data[0:can_dlc],
+                       True if (can_id & CAN_EFF_FLAG) else False)
+            log.debug("CAN.recv(): {!r}".format(message))
+            callback(self, message)
+            try:
+                packet = self.recv(16)
+            except Exception:
+                packet = None
+
+    def add_to_ioloop(self, ioloop, callback=None):
+        ioloop.add_handler(
+            self.socket.fileno(),
+            functools.partial(self._read, callback=callback),
+            ioloop.READ)
+
+    def open(self, callback=None):
+        self.socket = get_socket(interface)
+
+    def close(self, callback=None):
+        self.socket.close()
+
+    def send(self, message_id, message, extended=False):
+        log.debug("CAN.send({!r}, {!r}, {!r})".format(message_id, message,
+                                                      extended))
+
+        message_pad = message + "\x00" * (8 - len(message))
+        self.socket.send(struct.pack("=IB3x8s", message_id, len(message),
+                                     message_pad))
+
+
+class SLCAN(object):
     def __init__(self, device, baudrate=1000000):
+        if not serial:
+            raise RuntimeError(
+                "PySerial not imported; SLCAN is not available")
+
         self.conn = serial.Serial(device, 3000000, timeout=0)
         self._read_handler = self._get_bytes_sync
         self.partial_message = ""
@@ -23,16 +168,9 @@ class CAN(object):
         return os.read(self.conn.fd, 1024)
 
     def _ioloop_event_handler(self, fd, events, callback=None):
-        self.recv(callback=callback)
+        self._recv(callback=callback)
 
-    def add_to_ioloop(self, ioloop, callback=None):
-        self._read_handler = self._get_bytes_async
-        ioloop.add_handler(
-            self.conn.fd,
-            functools.partial(self._ioloop_event_handler, callback=callback),
-            ioloop.READ)
-
-    def parse(self, message):
+    def _parse(self, message):
         try:
             if message[0] == "T":
                 id_len = 8
@@ -50,28 +188,7 @@ class CAN(object):
         except Exception:
             return None
 
-    def open(self, callback=None):
-        self.close()
-        speed_code = {
-            1000000: 8,
-            500000: 6,
-            250000: 5,
-            125000: 4
-        }[self.baudrate]
-        self.conn.write("S{0:d}\r".format(speed_code))
-        self.conn.flush()
-        self.recv()
-        self.conn.write("O\r")
-        self.conn.flush()
-        self.recv()
-        time.sleep(0.1)
-
-    def close(self, callback=None):
-        self.conn.write("C\r")
-        self.conn.flush()
-        time.sleep(0.1)
-
-    def recv(self, callback=None):
+    def _recv(self, callback=None):
         bytes = ""
         new_bytes = self._read_handler()
         while new_bytes:
@@ -97,7 +214,7 @@ class CAN(object):
         if messages[-1]:
             self.partial_message = messages.pop()
         # Filter, parse and return the messages
-        messages = list(self.parse(m) for m in messages
+        messages = list(self._parse(m) for m in messages
                         if m and m[0] in ("t", "T"))
         messages = filter(lambda x: x and x[0], messages)
 
@@ -112,6 +229,34 @@ class CAN(object):
             for message in messages:
                 log.debug("CAN.recv(): {!r}".format(message))
             return messages
+
+    def add_to_ioloop(self, ioloop, callback=None):
+        self._read_handler = self._get_bytes_async
+        ioloop.add_handler(
+            self.conn.fd,
+            functools.partial(self._ioloop_event_handler, callback=callback),
+            ioloop.READ)
+
+    def open(self, callback=None):
+        self.close()
+        speed_code = {
+            1000000: 8,
+            500000: 6,
+            250000: 5,
+            125000: 4
+        }[self.baudrate]
+        self.conn.write("S{0:d}\r".format(speed_code))
+        self.conn.flush()
+        self._recv()
+        self.conn.write("O\r")
+        self.conn.flush()
+        self._recv()
+        time.sleep(0.1)
+
+    def close(self, callback=None):
+        self.conn.write("C\r")
+        self.conn.flush()
+        time.sleep(0.1)
 
     def send(self, message_id, message, extended=False):
         log.debug("CAN.send({!r}, {!r}, {!r})".format(message_id, message,
@@ -135,7 +280,7 @@ if __name__ == "__main__":
     can = CAN(sys.argv[1])
     can.open()
     while True:
-        messages = can.recv()
+        messages = can._recv()
         for message in messages:
             print(message)
 

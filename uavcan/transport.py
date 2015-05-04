@@ -115,11 +115,24 @@ def cast(value, dtype):
         raise ValueError("Invalid cast_mode: " + repr(dtype))
 
 
-class TransferType(object):
-    SERVICE_RESPONSE = 0
-    SERVICE_REQUEST = 1
-    MESSAGE_BROADCAST = 2
-    MESSAGE_UNICAST = 3
+def _mask(length):
+    return (1 << length) - 1
+
+
+def _get_field(value, offset, length):
+    return (value >> offset) & _mask(length)
+
+
+def _set_field(base_value, new_value, offset, length):
+    return (base_value & ~(_mask(length) << offset)) | \
+           ((new_value & _mask(length)) << offset)
+
+
+class TransferPriority(object):
+    HIGH = 0
+    NORMAL = 1
+    SERVICE = 2
+    LOW = 3
 
 
 class BaseValue(object):
@@ -368,6 +381,26 @@ class CompoundValue(BaseValue):
 
 
 class Frame(object):
+    COMMON_ID_FIELDS = {
+        "transfer_id": (0, 3),
+        "last_frame": (3, 1),
+        "transfer_priority": (27, 2)
+    }
+
+    MESSAGE_ID_FIELDS = {
+        "frame_index": (4, 4),
+        "broadcast_not_unicast": (8, 1),
+        "source_node_id": (9, 7),
+        "data_type_id": (16, 11)
+    }
+
+    SERVICE_ID_FIELDS = {
+        "frame_index": (4, 6),
+        "source_node_id": (10, 7),
+        "service_type_id": (17, 9),
+        "request_not_response": (26, 1)
+    }
+
     def __init__(self, message_id=None, raw_payload=None):
         self.message_id = message_id
         self._payload = bytearray(raw_payload) if raw_payload else None
@@ -375,89 +408,144 @@ class Frame(object):
     def __str__(self):
         return ("Frame(message_id={0!r}, raw_payload={1!r}): " +
                 "transfer_id={2}, last_frame={3}, frame_index={4}, " +
-                "source_node_id={5}, transfer_type={6}, data_type_id={7}, " +
+                "source_node_id={5}, transfer_priority={6}, data_type_id={7}, " +
                 "dest_node_id={8}, payload={9}").format(
                 self.message_id, self._payload, self.transfer_id,
                 self.last_frame, self.frame_index, self.source_node_id,
-                self.transfer_type, self.data_type_id, self.dest_node_id,
+                self.transfer_priority, self.data_type_id, self.dest_node_id,
                 format_bits(bits_from_bytes(self.payload)))
 
     def __repr__(self):
         return "Frame(message_id={0!r}, raw_payload={1!r})".format(
                 self.message_id, self._payload)
 
+    def _get_field(self, field_name):
+        if field_name in Frame.COMMON_ID_FIELDS:
+            return _get_field(self.message_id,
+                              *Frame.COMMON_ID_FIELDS[field_name])
+
+        priority = _get_field(self.message_id,
+                              *Frame.COMMON_ID_FIELDS["transfer_priority"])
+        if priority == TransferPriority.SERVICE:
+            return _get_field(self.message_id,
+                              *Frame.SERVICE_ID_FIELDS[field_name])
+        else:
+            return _get_field(self.message_id,
+                              *Frame.MESSAGE_ID_FIELDS[field_name])
+
+    def _set_field(self, field_name, value):
+        if field_name in Frame.COMMON_ID_FIELDS:
+            self.message_id = _set_field(self.message_id, value,
+                                         *Frame.COMMON_ID_FIELDS[field_name])
+        else:
+            priority = _get_field(
+                self.message_id, *Frame.COMMON_ID_FIELDS["transfer_priority"])
+            if priority == TransferPriority.SERVICE:
+                self.message_id = _set_field(
+                    self.message_id, value,
+                    *Frame.SERVICE_ID_FIELDS[field_name])
+            else:
+                self.message_id = _set_field(
+                    self.message_id, value,
+                    *Frame.MESSAGE_ID_FIELDS[field_name])
+
+    @property
+    def transfer_priority(self):
+        return self._get_field("transfer_priority")
+
+    @transfer_priority.setter
+    def transfer_priority(self, value):
+        self._set_field("transfer_priority", value)
+
     @property
     def transfer_id(self):
-        return self.message_id & 0x7
+        return self._get_field("transfer_id")
 
     @transfer_id.setter
     def transfer_id(self, value):
-        self.message_id = (self.message_id & ~0x7) | (value & 0x7)
+        self._set_field("transfer_id", value)
 
     @property
     def last_frame(self):
-        return True if ((self.message_id >> 3) & 0x1) else False
+        return True if self._get_field("last_frame") else False
 
     @last_frame.setter
     def last_frame(self, value):
-        self.message_id = (self.message_id & ~(0x1 << 3)) | \
-                          ((1 if value else 0) << 3)
+        self._set_field("last_frame", value)
 
     @property
     def frame_index(self):
-        return (self.message_id >> 4) & 0x3F
+        return self._get_field("frame_index")
 
     @frame_index.setter
     def frame_index(self, value):
-        self.message_id = (self.message_id & ~(0x3F << 4)) | \
-                          ((value & 0x3F) << 4)
+        self._set_field("frame_index", value)
 
     @property
     def source_node_id(self):
-        return (self.message_id >> 10) & 0x7F
+        return self._get_field("source_node_id")
 
     @source_node_id.setter
     def source_node_id(self, value):
-        self.message_id = (self.message_id & ~(0x7F << 10)) | \
-                          ((value & 0x7F) << 10)
-
-    @property
-    def transfer_type(self):
-        return (self.message_id >> 17) & 0x3
-
-    @transfer_type.setter
-    def transfer_type(self, value):
-        self.message_id = (self.message_id & ~(0x3 << 17)) | \
-                          ((value & 0x3) << 17)
+        self._set_field("source_node_id", value)
 
     @property
     def data_type_id(self):
-        return (self.message_id >> 19) & 0x3FF
+        return self._get_field("data_type_id")
 
     @data_type_id.setter
     def data_type_id(self, value):
-        self.message_id = (self.message_id & ~(0x3FF << 19)) | \
-                          ((value & 0x3FF) << 19)
+        self._set_field("data_type_id", value)
+
+    @property
+    def broadcast_not_unicast(self):
+        try:
+            return self._get_field("broadcast_not_unicast")
+        except Exception:
+            return False
+
+    @broadcast_not_unicast.setter
+    def broadcast_not_unicast(self, value):
+        try:
+            self._set_field("broadcast_not_unicast", value)
+        except Exception:
+            pass
+
+    @property
+    def request_not_response(self):
+        try:
+            return self._get_field("request_not_response")
+        except Exception:
+            return False
+
+    @request_not_response.setter
+    def request_not_response(self, value):
+        try:
+            self._set_field("request_not_response", value)
+        except Exception:
+            pass
 
     @property
     def dest_node_id(self):
-        if self.transfer_type == TransferType.MESSAGE_BROADCAST:
-            return 0
-        else:
+        if self.broadcast_not_unicast:
             return self._payload[0] & 0x7F
+        else:
+            return None
 
     @dest_node_id.setter
     def dest_node_id(self, value):
-        if self.transfer_type == TransferType.MESSAGE_BROADCAST:
-            raise ValueError("Can't set dest_node_id for a broadcast frame")
-        elif not self.payload:
-            self._payload = bytearray([value & 0x7F])
+        if value:
+            self.broadcast_not_unicast = False
+            if not self.payload:
+                self._payload = bytearray([value & 0x7F])
+            else:
+                self._payload[0] = value & 0x7F
         else:
-            self._payload[0] = value & 0x7F
+            self.broadcast_not_unicast = True
 
     @property
     def payload(self):
-        if self.transfer_type == TransferType.MESSAGE_BROADCAST:
+        if self.broadcast_not_unicast:
             return self._payload
         elif self._payload:
             return self._payload[1:]
@@ -467,7 +555,7 @@ class Frame(object):
     @payload.setter
     def payload(self, value):
         value = bytearray(value)
-        if self.transfer_type == TransferType.MESSAGE_BROADCAST:
+        if self.broadcast_not_unicast:
             if len(value) > 8:
                 raise IndexError("Maximum broadcast frame payload size is 8")
             else:
@@ -482,26 +570,29 @@ class Frame(object):
 
     @property
     def transfer_key(self):
-        if self.transfer_type == TransferType.MESSAGE_BROADCAST:
-            return (self.source_node_id, self.data_type_id, self.transfer_id)
+        if self.broadcast_not_unicast:
+            return (self.source_node_id, self.data_type_id, self.transfer_id,
+                    self.transfer_priority)
         else:
             return (self.source_node_id, self.dest_node_id, self.data_type_id,
-                    self.transfer_id)
+                    self.transfer_id, self.transfer_priority)
 
     def to_bytes(self):
         return self._payload
 
 
 class Transfer(object):
-    def __init__(self, transfer_id=0, transfer_type=0,
-                 source_node_id=0, data_type_id=0, dest_node_id=0,
-                 payload=0):
+    def __init__(self, transfer_id=0, source_node_id=0, data_type_id=0,
+                 dest_node_id=None, payload=0,
+                 transfer_priority=TransferPriority.NORMAL,
+                 request_not_response=False):
         self.transfer_id = transfer_id
-        self.transfer_type = transfer_type
+        self.transfer_priority = transfer_priority
         self.source_node_id = source_node_id
         self.data_type_id = data_type_id
         self.dest_node_id = dest_node_id
         self.data_type_signature = 0
+        self.request_not_response = request_not_response
 
         if isinstance(payload, CompoundValue):
             payload_bits = payload.pack()
@@ -518,7 +609,7 @@ class Transfer(object):
     def to_frames(self, datatype_crc=None):
         # Broadcast frames support up to 8 bytes, other frames have a
         # destination node ID which consumes the first byte of the message
-        if self.transfer_type == TransferType.MESSAGE_BROADCAST:
+        if self.dest_node_id is not None:
             bytes_per_frame = 8
         else:
             bytes_per_frame = 7
@@ -541,10 +632,10 @@ class Transfer(object):
             frame.last_frame = len(remaining_payload) <= bytes_per_frame
             frame.source_node_id = self.source_node_id
             frame.data_type_id = self.data_type_id
-            frame.transfer_type = self.transfer_type
-            if self.transfer_type != TransferType.MESSAGE_BROADCAST:
-                frame.dest_node_id = self.dest_node_id
+            frame.transfer_priority = self.transfer_priority
+            frame.dest_node_id = self.dest_node_id
             frame.payload = remaining_payload[0:bytes_per_frame]
+            frame.request_not_response = self.request_not_response
 
             out_frames.append(frame)
             remaining_payload = remaining_payload[bytes_per_frame:]
@@ -563,12 +654,12 @@ class Transfer(object):
                                       "got {1}").format(i, f.frame_index))
 
         self.transfer_id = frames[0].transfer_id
-        self.transfer_type = frames[0].transfer_type
+        self.transfer_priority = frames[0].transfer_priority
         self.source_node_id = frames[0].source_node_id
         self.data_type_id = frames[0].data_type_id
-        if self.transfer_type != TransferType.MESSAGE_BROADCAST:
-            self.dest_node_id = frames[0].dest_node_id
+        self.dest_node_id = frames[0].dest_node_id
         self.payload = sum((f.payload for f in frames), bytearray())
+        self.request_not_response = frames[0].request_not_response
 
         # For a multi-frame transfer, validate the CRC and frame indexes
         if len(frames) > 1:
@@ -583,18 +674,19 @@ class Transfer(object):
 
     @property
     def key(self):
-        if self.transfer_type == TransferType.MESSAGE_BROADCAST:
-            return (self.source_node_id, self.data_type_id, self.transfer_id)
+        if self.dest_node_id is None:
+            return (self.source_node_id, self.data_type_id, self.transfer_id,
+                    self.transfer_priority)
         else:
             return (self.source_node_id, self.dest_node_id, self.data_type_id,
-                    self.transfer_id)
+                    self.transfer_id, self.transfer_priority)
 
     def is_response_to(self, transfer):
-        if self.transfer_type == TransferType.SERVICE_RESPONSE and \
+        if self.transfer_priority == TransferPriority.SERVICE and \
                 self.source_node_id == transfer.dest_node_id and \
                 self.dest_node_id == transfer.source_node_id and \
                 self.data_type_id == transfer.data_type_id and \
-                self.transfer_id == transfer.transfer_id:
+                not self.request_not_response:
             return True
         else:
             return False
