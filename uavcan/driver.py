@@ -263,9 +263,9 @@ class SLCAN(object):
                                                       extended))
 
         if extended:
-            start = "T{0:8X}".format(message_id)
+            start = "T{0:08X}".format(message_id)
         else:
-            start = "t{0:3X}".format(message_id)
+            start = "t{0:03X}".format(message_id)
         line = "{0:s}{1:1d}{2:s}\r".format(start, len(message),
                                            binascii.b2a_hex(message))
         self.conn.write(line)

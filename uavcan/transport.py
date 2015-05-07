@@ -459,7 +459,10 @@ class Frame(object):
 
     @property
     def transfer_id(self):
-        return self._get_field("transfer_id")
+        if not self.source_node_id:  # Always 0 for anonymous frames
+            return 0
+        else:
+            return self._get_field("transfer_id")
 
     @transfer_id.setter
     def transfer_id(self, value):
@@ -467,7 +470,11 @@ class Frame(object):
 
     @property
     def last_frame(self):
-        return True if self._get_field("last_frame") else False
+        # Always true for anonymous frames
+        if not self.source_node_id or self._get_field("last_frame"):
+            return True
+        else:
+            return False
 
     @last_frame.setter
     def last_frame(self, value):
@@ -475,7 +482,10 @@ class Frame(object):
 
     @property
     def frame_index(self):
-        return self._get_field("frame_index")
+        if not self.source_node_id:  # Always 0 for anonymous frames
+            return 0
+        else:
+            return self._get_field("frame_index")
 
     @frame_index.setter
     def frame_index(self, value):
@@ -636,6 +646,7 @@ class Transfer(object):
             frame.dest_node_id = self.dest_node_id
             frame.payload = remaining_payload[0:bytes_per_frame]
             frame.request_not_response = self.request_not_response
+            frame.broadcast_not_unicast = False if self.dest_node_id else True
 
             out_frames.append(frame)
             remaining_payload = remaining_payload[bytes_per_frame:]
@@ -660,6 +671,7 @@ class Transfer(object):
         self.dest_node_id = frames[0].dest_node_id
         self.payload = sum((f.payload for f in frames), bytearray())
         self.request_not_response = frames[0].request_not_response
+        self.broadcast_not_unicast = frames[0].broadcast_not_unicast
 
         # For a multi-frame transfer, validate the CRC and frame indexes
         if len(frames) > 1:
