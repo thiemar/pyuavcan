@@ -109,9 +109,10 @@ except Exception:
 
     def get_socket(ifname):
         on  = ctypes.c_int(1)
+        off  = ctypes.c_int(1)
         socket_fd = libc.socket(AF_CAN, socket.SOCK_RAW, CAN_RAW)
         error = libc.setsockopt(socket_fd , SOL_SOCKET, socket.SO_TIMESTAMP, ctypes.byref(on), ctypes.sizeof(on))
-        error = libc.setsockopt(socket_fd, SOL_CAN_RAW, CAN_RAW_RECV_OWN_MSGS, ctypes.byref(on), ctypes.sizeof(on))
+        error = libc.setsockopt(socket_fd, SOL_CAN_RAW, CAN_RAW_RECV_OWN_MSGS, ctypes.byref(off), ctypes.sizeof(off))
         libc.fcntl(socket_fd, fcntl.F_SETFL, os.O_NONBLOCK)
         ifidx = libc.if_nametoindex(ifname)
         addr = sockaddr_can(AF_CAN, ifidx)
@@ -176,7 +177,7 @@ class SocketCAN(object):
 
         message_pad = message + "\x00" * (8 - len(message))
         self.socket.send(struct.pack("=IB3x8s", message_id, len(message),
-                                     message_pad))
+                                     str(message_pad)))
 
 
 class SLCAN(object):
