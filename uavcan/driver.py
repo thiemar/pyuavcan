@@ -1,13 +1,15 @@
 #encoding=utf-8
 
 import os
+import sys
 import time
 import socket
+import fcntl
 import struct
 import binascii
 import functools
 import logging as log
-
+from _socketmodule import SOL_SOCKET
 
 # If PySerial isn't available, we can't support SLCAN
 try:
@@ -38,6 +40,14 @@ except Exception:
 
     # from linux/socket.h
     AF_CAN = 29
+    
+    SOL_CAN_BASE            = 100
+    SOL_CAN_RAW             = SOL_CAN_BASE + CAN_RAW
+    CAN_RAW_FILTER          = 1     #/* set 0 .. n can_filter(s)          */
+    CAN_RAW_ERR_FILTER      = 2     #/* set filter for error frames       */
+    CAN_RAW_LOOPBACK        = 3     #/* local loopback (default:on)       */
+    CAN_RAW_RECV_OWN_MSGS   = 4     #/* receive my own msgs (default:off) */
+    CAN_RAW_FD_FRAMES       = 5     #/* allow CAN FD frames (default:off) *
 
     class sockaddr_can(ctypes.Structure):
         """
@@ -98,7 +108,11 @@ except Exception:
             libc.close(self.fd)
 
     def get_socket(ifname):
+        on  = ctypes.c_int(1)
+        off  = ctypes.c_int(1)
         socket_fd = libc.socket(AF_CAN, socket.SOCK_RAW, CAN_RAW)
+        error = libc.setsockopt(socket_fd , SOL_SOCKET, socket.SO_TIMESTAMP, ctypes.byref(on), ctypes.sizeof(on))
+        error = libc.setsockopt(socket_fd, SOL_CAN_RAW, CAN_RAW_RECV_OWN_MSGS, ctypes.byref(off), ctypes.sizeof(off))
         libc.fcntl(socket_fd, fcntl.F_SETFL, os.O_NONBLOCK)
         ifidx = libc.if_nametoindex(ifname)
         addr = sockaddr_can(AF_CAN, ifidx)
@@ -116,19 +130,35 @@ class SocketCAN(object):
         self.interface = interface
         self.socket = None
 
-    def _read(self, fd, events, calback=None):
-        packet = self.recv(16)
+    def _read(self, fd, events, callback=None):
+        messages = []
+        packet = self.socket.recv(16)
         while packet:
             can_id, can_dlc, can_data = struct.unpack("=IB3x8s", packet)
             message = (can_id & CAN_EFF_MASK, can_data[0:can_dlc],
                        True if (can_id & CAN_EFF_FLAG) else False)
-            log.debug("CAN.recv(): {!r}".format(message))
-            callback(self, message)
+            if message[2]:
+                messages.append(message)
+            else:
+                if callback:
+                    for message in messages:
+                        log.debug("CAN.recv(): {!r}".format(message))
+                        try:
+                            callback(self, message)
+                        except Exception:
+                            raise
+                else:
+                    for message in messages:
+                        log.debug("CAN.recv(): {!r}".format(message))
+                    return messages
             try:
-                packet = self.recv(16)
+                packet = self.socket.recv(16)
             except Exception:
                 packet = None
 
+    def _recv(self, callback=None):
+        return self._read(0, None, callback)
+    
     def add_to_ioloop(self, ioloop, callback=None):
         ioloop.add_handler(
             self.socket.fileno(),
@@ -136,7 +166,7 @@ class SocketCAN(object):
             ioloop.READ)
 
     def open(self, callback=None):
-        self.socket = get_socket(interface)
+        self.socket = get_socket(self.interface)
 
     def close(self, callback=None):
         self.socket.close()
@@ -147,7 +177,7 @@ class SocketCAN(object):
 
         message_pad = message + "\x00" * (8 - len(message))
         self.socket.send(struct.pack("=IB3x8s", message_id, len(message),
-                                     message_pad))
+                                     str(message_pad)))
 
 
 class SLCAN(object):
@@ -277,7 +307,11 @@ if __name__ == "__main__":
         print("Usage: driver.py CAN_DEVICE")
         sys.exit()
 
-    can = CAN(sys.argv[1])
+    if "tty" in sys.argv[1]:
+        can = SLCAN(sys.argv[1])
+    else:
+        can = SocketCAN(sys.argv[1])
+    
     can.open()
     while True:
         messages = can._recv()
