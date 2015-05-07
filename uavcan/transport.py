@@ -134,7 +134,6 @@ class TransferPriority(object):
     SERVICE = 2
     LOW = 3
 
-
 class BaseValue(object):
     def __init__(self, uavcan_type, *args, **kwargs):
         self.type = uavcan_type
@@ -595,7 +594,7 @@ class Transfer(object):
     def __init__(self, transfer_id=0, source_node_id=0, data_type_id=0,
                  dest_node_id=None, payload=0,
                  transfer_priority=TransferPriority.NORMAL,
-                 request_not_response=False):
+                 request_not_response=False, broadcast_not_unicast= False):
         self.transfer_id = transfer_id
         self.transfer_priority = transfer_priority
         self.source_node_id = source_node_id
@@ -603,6 +602,7 @@ class Transfer(object):
         self.dest_node_id = dest_node_id
         self.data_type_signature = 0
         self.request_not_response = request_not_response
+        self.broadcast_not_unicast = broadcast_not_unicast
 
         if isinstance(payload, CompoundValue):
             payload_bits = payload.pack()
@@ -683,6 +683,24 @@ class Transfer(object):
                                   "for payload {2!r} (DTID {3:d})").format(
                                   crc, transfer_crc, self.payload,
                                   self.data_type_id))
+
+    def is_message(self):
+        return self.transfer_priority != TransferPriority.SERVICE
+
+    def is_service(self):
+        return self.transfer_priority == TransferPriority.SERVICE
+
+    def is_request(self):
+        return self.is_service() and self.request_not_response
+
+    def is_response(self):
+        return self.is_service() and not self.request_not_response
+
+    def is_broadcast(self):
+        return self.is_message() and self.broadcast_not_unicast
+
+    def is_unicast(self):
+        return self.is_message() and not self.broadcast_not_unicast
 
     @property
     def key(self):
