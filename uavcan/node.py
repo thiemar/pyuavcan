@@ -50,9 +50,7 @@ class Node(object):
             return
 
         dtid = transfer_frames[0].data_type_id
-        if transfer_frames[0].transfer_type in (
-                transport.TransferType.SERVICE_RESPONSE,
-                transport.TransferType.SERVICE_REQUEST):
+        if transfer_frames[0].isService:
             kind = dsdl.parser.CompoundType.KIND_SERVICE
         else:
             kind = dsdl.parser.CompoundType.KIND_MESSAGE
@@ -64,10 +62,10 @@ class Node(object):
 
         transfer = transport.Transfer()
         transfer.from_frames(transfer_frames, datatype_crc=datatype.base_crc)
-
-        if transfer.transfer_type == transport.TransferType.SERVICE_RESPONSE:
+      
+        if transfer.isServiceResponse:
             payload = datatype(mode="response")
-        elif transfer.transfer_type == transport.TransferType.SERVICE_REQUEST:
+        elif transfer.isServiceRequest:
             payload = datatype(mode="request")
         else:
             payload = datatype()
@@ -85,9 +83,7 @@ class Node(object):
                 "Node._recv_frame(): got node info {0!r}".format(
                 self.node_info[transfer.source_node_id]))
 
-        if transfer.transfer_type != transport.TransferType.SERVICE_RESPONSE and \
-                (transfer.transfer_type == transport.TransferType.MESSAGE_BROADCAST or
-                 transfer.dest_node_id == self.node_id):
+        if transfer.isBroadcast or transfer.dest_node_id == self.node_id:
             # This is a request, a unicast or a broadcast; look up the
             # appropriate handler by data type ID
             for handler in self.handlers:
@@ -95,8 +91,7 @@ class Node(object):
                     kwargs = handler[2] if len(handler) == 3 else {}
                     h = handler[1](payload, transfer, self, **kwargs)
                     h._execute()
-        elif transfer.transfer_type == transport.TransferType.SERVICE_RESPONSE and \
-                transfer.dest_node_id == self.node_id:
+        elif transfer.isServiceResponse and transfer.dest_node_id == self.node_id:
             # This is a reply to a request we sent. Look up the original
             # request and call the appropriate callback
             requests = self.outstanding_requests.keys()
