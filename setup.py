@@ -16,6 +16,6 @@ setup(
         "Programming Language :: Python :: 2.7",
     ],
     keywords="",
-    packages=["uavcan"],
+    packages=["uavcan", "uavcan.dsdl", "uavcan.handlers"],
     install_requires=["tornado>=4.1"],
 )
