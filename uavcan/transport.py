@@ -300,6 +300,15 @@ class ArrayValue(BaseValue, collections.MutableSequence):
             count = format(len(self), "0{0:1d}b".format(count_width))
             return count + "".join(i.pack() for i in self.__items)
 
+    def from_bytes(self, value):
+        del self[:]
+        for byte in bytearray(value):
+            self.append(byte)
+
+    def to_bytes(self):
+        return bytes(bytearray(item.value for item in self.__items
+                               if item._bits))
+
     def encode(self, value):
         del self[:]
         value = bytearray(value, encoding="utf-8")
@@ -396,7 +405,7 @@ class Frame(object):
     SERVICE_ID_FIELDS = {
         "frame_index": (4, 6),
         "source_node_id": (10, 7),
-        "service_type_id": (17, 9),
+        "data_type_id": (17, 9),
         "request_not_response": (26, 1)
     }
 
@@ -536,7 +545,7 @@ class Frame(object):
 
     @property
     def dest_node_id(self):
-        if self.broadcast_not_unicast:
+        if not self.broadcast_not_unicast:
             return self._payload[0] & 0x7F
         else:
             return None
@@ -594,9 +603,9 @@ class Transfer(object):
     def __init__(self, transfer_id=0, source_node_id=0, data_type_id=0,
                  dest_node_id=None, payload=0,
                  transfer_priority=TransferPriority.NORMAL,
-                 request_not_response=False, broadcast_not_unicast= False):
-        self.transfer_id = transfer_id
+                 request_not_response=False, broadcast_not_unicast=False):
         self.transfer_priority = transfer_priority
+        self.transfer_id = transfer_id
         self.source_node_id = source_node_id
         self.data_type_id = data_type_id
         self.dest_node_id = dest_node_id
@@ -637,12 +646,12 @@ class Transfer(object):
         # Generate the frame sequence
         while True:
             frame = Frame(message_id=0)
+            frame.transfer_priority = self.transfer_priority
             frame.transfer_id = self.transfer_id
             frame.frame_index = len(out_frames)
             frame.last_frame = len(remaining_payload) <= bytes_per_frame
             frame.source_node_id = self.source_node_id
             frame.data_type_id = self.data_type_id
-            frame.transfer_priority = self.transfer_priority
             frame.dest_node_id = self.dest_node_id
             frame.payload = remaining_payload[0:bytes_per_frame]
             frame.request_not_response = self.request_not_response

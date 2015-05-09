@@ -90,12 +90,12 @@ class DynamicNodeIDAllocationHandler(uavcan.node.MessageHandler):
         if message.first_part_of_unique_id:
             # First-phase messages trigger a second-phase query
             DynamicNodeIDAllocationHandler.ALLOCATION_QUERY = \
-                message.unique_id.decode()
+                message.unique_id.to_bytes()
 
             response = uavcan.protocol.dynamic_node_id.Allocation()
             response.first_part_of_unique_id = 0
             response.node_id = 0
-            response.unique_id.encode(
+            response.unique_id.from_bytes(
                 DynamicNodeIDAllocationHandler.ALLOCATION_QUERY)
             self.node.send_broadcast(response)
 
@@ -107,12 +107,12 @@ class DynamicNodeIDAllocationHandler(uavcan.node.MessageHandler):
             # Second-phase messages trigger a third-phase query
             DynamicNodeIDAllocationHandler.ALLOCATION_QUERY = \
                 DynamicNodeIDAllocationHandler.ALLOCATION_QUERY + \
-                message.unique_id.decode()
+                message.unique_id.to_bytes()
 
             response = uavcan.protocol.dynamic_node_id.Allocation()
             response.first_part_of_unique_id = 0
             response.node_id = 0
-            response.unique_id.encode(
+            response.unique_id.from_bytes(
                 DynamicNodeIDAllocationHandler.ALLOCATION_QUERY)
             self.node.send_broadcast(response)
             logging.debug(("[MASTER] Got second-stage dynamic ID request " +
@@ -123,7 +123,7 @@ class DynamicNodeIDAllocationHandler(uavcan.node.MessageHandler):
             # Third-phase messages trigger an allocation
             DynamicNodeIDAllocationHandler.ALLOCATION_QUERY = \
                 DynamicNodeIDAllocationHandler.ALLOCATION_QUERY + \
-                message.unique_id.decode()
+                message.unique_id.to_bytes()
 
             logging.debug(("[MASTER] Got third-stage dynamic ID request " +
                            "for {0!r}").format(
@@ -170,7 +170,7 @@ class DynamicNodeIDAllocationHandler(uavcan.node.MessageHandler):
                 response = uavcan.protocol.dynamic_node_id.Allocation()
                 response.first_part_of_unique_id = 0
                 response.node_id = node_allocated_id
-                response.unique_id.encode(
+                response.unique_id.from_bytes(
                     DynamicNodeIDAllocationHandler.ALLOCATION_QUERY)
                 self.node.send_broadcast(response)
                 logging.info(("[MASTER] Allocated node ID #{0:03d} to node " +
