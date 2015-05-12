@@ -628,7 +628,7 @@ class Transfer(object):
     def to_frames(self, datatype_crc=None):
         # Broadcast frames support up to 8 bytes, other frames have a
         # destination node ID which consumes the first byte of the message
-        if self.dest_node_id is not None:
+        if self.dest_node_id is None:
             bytes_per_frame = 8
         else:
             bytes_per_frame = 7
