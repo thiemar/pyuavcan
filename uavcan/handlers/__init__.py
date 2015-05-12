@@ -73,7 +73,7 @@ class NodeStatusHandler(uavcan.node.MessageHandler):
 
             # If a new-node callback is defined, call it now
             if self.new_node_callback:
-                self.new_node_callback(node_id, response)
+                yield self.new_node_callback(self.node, node_id, response)
 
         raise tornado.gen.Return()
 
