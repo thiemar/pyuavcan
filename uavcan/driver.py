@@ -152,14 +152,14 @@ class SocketCAN(object):
 
         if callback:
             for message in messages:
-                log.debug("CAN.recv(): {!r}".format(message))
+                log.debug("CAN.recv(): {!r} data:{}".format(message, binascii.hexlify(message[1])))
                 try:
                     callback(self, message)
                 except Exception:
                     raise
         else:
             for message in messages:
-                log.debug("CAN.recv(): {!r}".format(message))
+                log.debug("CAN.recv(): {!r} data:{}".format(message, binascii.hexlify(message[1])))
             return messages
 
     def _recv(self, callback=None):
@@ -178,7 +178,7 @@ class SocketCAN(object):
         self.socket.close()
 
     def send(self, message_id, message, extended=False):
-        log.debug("CAN.send({!r}, {!r}, {!r})".format(message_id, message,
+        log.debug("CAN.send({!r}, {!r}, {!r})".format(message_id, binascii.hexlify(message),
                                                       extended))
 
         message_pad = bytes(message) + b"\x00" * (8 - len(message))
