@@ -1,5 +1,6 @@
 import sys
 import struct
+import logging
 import functools
 import uavcan.dsdl as dsdl
 import uavcan.transport as transport
@@ -60,6 +61,9 @@ def load_dsdl(paths):
             # Add the base CRC to each data type capable of being transmitted
             dtype.base_crc = dsdl.common.crc16_from_bytes(
                 struct.pack("<Q", dtype.get_data_type_signature()))
+            logging.debug("DSDL Load {: >30} DTID: {: >4} base_crc:{: >8}".
+                          format(typename, dtype.default_dtid,
+                                 hex(dtype.base_crc)))
 
         def create_instance_closure(closure_type):
             def create_instance(*args, **kwargs):
