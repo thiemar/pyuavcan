@@ -238,7 +238,7 @@ class FileReadHandler(uavcan.node.ServiceHandler):
 
 class DebugLogMessageHandler(uavcan.node.MessageHandler):
     def on_message(self, message):
-        logmsg = "[#{0:03d}:{1}] {2}".format(self.transfer.source_node_id,
+        logmsg = "DebugLogMessageHandler [#{0:03d}:{1}] {2}".format(self.transfer.source_node_id,
                                              message.source.decode(),
                                              message.text.decode())
         (logging.debug, logging.info,
