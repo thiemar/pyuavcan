@@ -228,7 +228,7 @@ class FileReadHandler(uavcan.node.ServiceHandler):
             vpath = self.request.path.path.decode()
             with open(os.path.join(self.base_path, vpath), "rb") as fw:
                 fw.seek(self.request.offset)
-                for byte in fw.read(250):
+                for byte in fw.read(256):
                     self.response.data.append(ord(byte))
                 self.response.error.value = self.response.error.OK
         except Exception:
