@@ -154,6 +154,9 @@ class BaseValue(object):
 
 
 class PrimitiveValue(BaseValue):
+    def __repr__(self):
+        return repr(self.value)
+
     @property
     def value(self):
         if not self._bits:
@@ -356,6 +359,11 @@ class CompoundValue(BaseValue):
                 self.fields[field.name] = ArrayValue(field.type, tao=atao)
             elif isinstance(field.type, dsdl.parser.CompoundType):
                 self.fields[field.name] = CompoundValue(field.type, tao=atao)
+
+    def __repr__(self):
+        fields = ", ".join("{0}={1!r}".format(f, v)
+                           for f, v in self.fields.items())
+        return "{0}({1})".format(self.type.full_name, fields)
 
     def __getattr__(self, attr):
         if attr in self.constants:

@@ -73,6 +73,8 @@ class Node(object):
 
         payload.unpack(transport.bits_from_bytes(transfer.payload))
 
+        logging.info("Node._recv_frame(): received {0!r}".format(payload))
+
         # If it's a node info request, keep track of the status of each node
         if payload.type == uavcan.protocol.NodeStatus:
             self.node_info[transfer.source_node_id] = {
@@ -80,9 +82,6 @@ class Node(object):
                 "status": payload.status_code,
                 "timestamp": time.time()
             }
-            logging.debug(
-                "Node._recv_frame(): got node info {0!r}".format(
-                self.node_info[transfer.source_node_id]))
 
         if transfer.is_response() and transfer.dest_node_id == self.node_id:
             # This is a reply to a request we sent. Look up the original
@@ -157,6 +156,10 @@ class Node(object):
         self.outstanding_request_callbacks[transfer.key] = callback
         self.outstanding_request_timestamps[transfer.key] = time.time()
 
+        logging.info(
+            "Node.send_request(dest_node_id={0:d}): sent {1!r}".format(
+            dest_node_id, payload))
+
     def send_unicast(self, payload, dest_node_id=None):
         transfer_id = self._next_transfer_id((payload.type.default_dtid,
                                               dest_node_id))
@@ -170,6 +173,10 @@ class Node(object):
         for frame in transfer.to_frames(datatype_crc=payload.type.base_crc):
             self.can.send(frame.message_id, frame.to_bytes(), extended=True)
 
+        logging.info(
+            "Node.send_unicast(dest_node_id={0:d}): sent {1!r}".format(
+            dest_node_id, payload))
+
     def send_broadcast(self, payload):
         transfer_id = self._next_transfer_id(payload.type.default_dtid)
         transfer = transport.Transfer(
@@ -180,6 +187,8 @@ class Node(object):
 
         for frame in transfer.to_frames(datatype_crc=payload.type.base_crc):
             self.can.send(frame.message_id, frame.to_bytes(), extended=True)
+
+        logging.info("Node.send_broadcast(): sent {0!r}".format(payload))
 
 
 class MessageHandler(object):
@@ -226,6 +235,10 @@ class ServiceHandler(MessageHandler):
         for frame in transfer.to_frames(datatype_crc=self.request.type.base_crc):
             self.node.can.send(frame.message_id, frame.to_bytes(),
                                extended=True)
+
+        logging.info(
+            "ServiceHandler._execute(dest_node_id={0:d}): sent {1!r}".format(
+            self.transfer.source_node_id, self.response))
 
     def on_request(self):
         pass
