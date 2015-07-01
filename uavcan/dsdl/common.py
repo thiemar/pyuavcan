@@ -6,6 +6,7 @@ from __future__ import division, absolute_import, print_function
 import os
 import struct
 
+
 class DsdlException(Exception):
     '''
     This exception is raised in case of a parser failure.
@@ -21,9 +22,9 @@ class DsdlException(Exception):
     def __str__(self):
         '''Returns nicely formatted error string in GCC-like format (can be parsed by e.g. Eclipse error parser)'''
         if self.file and self.line:
-            return u'%s:%d: %s' % (pretty_filename(self.file), self.line, Exception.__str__(self))
+            return '%s:%d: %s' % (pretty_filename(self.file), self.line, Exception.__str__(self))
         if self.file:
-            return u'%s: %s' % (pretty_filename(self.file), Exception.__str__(self))
+            return '%s: %s' % (pretty_filename(self.file), Exception.__str__(self))
         return Exception.__str__(self)
 
 
@@ -31,7 +32,7 @@ def pretty_filename(filename):
     '''Returns a nice human readable path to 'filename'.'''
     a = os.path.abspath(filename)
     r = os.path.relpath(filename)
-    return a if u'..' in r else r
+    return a if '..' in r else r
 
 
 def crc16_from_bytes(bytes, initial=0xFFFF):

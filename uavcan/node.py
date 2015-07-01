@@ -108,7 +108,7 @@ class Node(object):
 
     def _next_transfer_id(self, key):
         transfer_id = self.next_transfer_ids[key]
-        self.next_transfer_ids[key] = (transfer_id + 1) & 7
+        self.next_transfer_ids[key] = (transfer_id + 1) & 0x1F
         return transfer_id
 
     def listen(self, device, baudrate=1000000, io_loop=None):
@@ -135,7 +135,7 @@ class Node(object):
         status.uptime_sec = int(time.time() - self.start_time)
         status.status_code = self.status
         status.vendor_specific_status_code = 0
-        self.send_broadcast(status)
+        self.send_message(status)
 
     @tornado.concurrent.return_future
     def send_request(self, payload, dest_node_id=None, callback=None):
@@ -146,7 +146,7 @@ class Node(object):
             source_node_id=self.node_id,
             dest_node_id=dest_node_id,
             transfer_id=transfer_id,
-            transfer_priority=transport.TransferPriority.SERVICE,
+            service_not_message=True,
             request_not_response=True)
 
         for frame in transfer.to_frames(datatype_crc=payload.type.base_crc):
@@ -160,35 +160,18 @@ class Node(object):
             "Node.send_request(dest_node_id={0:d}): sent {1!r}".format(
             dest_node_id, payload))
 
-    def send_unicast(self, payload, dest_node_id=None):
-        transfer_id = self._next_transfer_id((payload.type.default_dtid,
-                                              dest_node_id))
-        transfer = transport.Transfer(
-            payload=payload,
-            source_node_id=self.node_id,
-            dest_node_id=dest_node_id,
-            transfer_id=transfer_id,
-            transfer_priority=transport.TransferPriority.NORMAL)
-
-        for frame in transfer.to_frames(datatype_crc=payload.type.base_crc):
-            self.can.send(frame.message_id, frame.to_bytes(), extended=True)
-
-        logging.info(
-            "Node.send_unicast(dest_node_id={0:d}): sent {1!r}".format(
-            dest_node_id, payload))
-
-    def send_broadcast(self, payload):
+    def send_message(self, payload):
         transfer_id = self._next_transfer_id(payload.type.default_dtid)
         transfer = transport.Transfer(
             payload=payload,
             source_node_id=self.node_id,
             transfer_id=transfer_id,
-            transfer_priority=transport.TransferPriority.NORMAL)
+            service_not_message=False)
 
         for frame in transfer.to_frames(datatype_crc=payload.type.base_crc):
             self.can.send(frame.message_id, frame.to_bytes(), extended=True)
 
-        logging.info("Node.send_broadcast(): sent {0!r}".format(payload))
+        logging.info("Node.send_message(): sent {0!r}".format(payload))
 
 
 class MessageHandler(object):
@@ -229,7 +212,8 @@ class ServiceHandler(MessageHandler):
             source_node_id=self.node.node_id,
             dest_node_id=self.transfer.source_node_id,
             transfer_id=self.transfer.transfer_id,
-            transfer_priority=transport.TransferPriority.SERVICE,
+            transfer_priority=self.transfer.transfer_priority,
+            service_not_message=True,
             request_not_response=False
         )
         for frame in transfer.to_frames(datatype_crc=self.request.type.base_crc):

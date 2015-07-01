@@ -7,11 +7,11 @@ This module implements a fully compliant UAVCAN DSDL parser.
 Please read the specs at http://uavcan.org.
 '''
 
-from uavcan.dsdl.parser import Parser, parse_namespaces, \
+from .parser import Parser, parse_namespaces, \
                     Type, PrimitiveType, ArrayType, CompoundType, \
                     Attribute, Field, Constant
 
-from uavcan.dsdl.common import DsdlException
+from .common import DsdlException
 
 __all__ = ['Parser', 'parse_namespaces',
            'Type', 'PrimitiveType', 'ArrayType', 'CompoundType',

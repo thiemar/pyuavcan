@@ -16,8 +16,8 @@ try:
     import serial
 except ImportError:
     serial = None
-    logging.info("uavcan.driver cannot import PySerial; SLCAN will not be "+
-                 "available.")
+    log.info("uavcan.driver cannot import PySerial; SLCAN will not be "+
+             "available.")
 
 
 # Python 3.3+'s socket module has support for SocketCAN when running on Linux.

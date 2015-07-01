@@ -97,7 +97,7 @@ class DynamicNodeIDAllocationHandler(uavcan.node.MessageHandler):
             response.node_id = 0
             response.unique_id.from_bytes(
                 DynamicNodeIDAllocationHandler.ALLOCATION_QUERY)
-            self.node.send_broadcast(response)
+            self.node.send_message(response)
 
             logging.debug(("[MASTER] Got first-stage dynamic ID request " +
                            "for {0!r}").format(
@@ -114,7 +114,7 @@ class DynamicNodeIDAllocationHandler(uavcan.node.MessageHandler):
             response.node_id = 0
             response.unique_id.from_bytes(
                 DynamicNodeIDAllocationHandler.ALLOCATION_QUERY)
-            self.node.send_broadcast(response)
+            self.node.send_message(response)
             logging.debug(("[MASTER] Got second-stage dynamic ID request " +
                            "for {0!r}").format(
                            DynamicNodeIDAllocationHandler.ALLOCATION_QUERY))
@@ -172,7 +172,7 @@ class DynamicNodeIDAllocationHandler(uavcan.node.MessageHandler):
                 response.node_id = node_allocated_id
                 response.unique_id.from_bytes(
                     DynamicNodeIDAllocationHandler.ALLOCATION_QUERY)
-                self.node.send_broadcast(response)
+                self.node.send_message(response)
                 logging.info(("[MASTER] Allocated node ID #{0:03d} to node " +
                               "with unique ID {1!r}").format(
                               node_allocated_id,
